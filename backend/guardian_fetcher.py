@@ -16,6 +16,8 @@ Strategy:
 """
 import hashlib
 import logging
+import threading
+import time
 from datetime import date, timedelta
 import httpx
 from config import settings
@@ -23,6 +25,21 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 GUARDIAN_BASE = "https://content.guardianapis.com"
+
+# Rate limit: 1 req/s (strict Guardian cap). Keep 100 ms safety margin.
+_throttle_lock = threading.Lock()
+_throttle_last_call_at = 0.0
+_THROTTLE_MIN_INTERVAL = 1.1  # seconds
+
+
+def _throttle() -> None:
+    """Block until at least _THROTTLE_MIN_INTERVAL has elapsed since the last Guardian call."""
+    global _throttle_last_call_at
+    with _throttle_lock:
+        delta = time.monotonic() - _throttle_last_call_at
+        if delta < _THROTTLE_MIN_INTERVAL:
+            time.sleep(_THROTTLE_MIN_INTERVAL - delta)
+        _throttle_last_call_at = time.monotonic()
 
 TAG_TO_GUARDIAN_SECTION: dict[str, str] = {
     "Technology":    "technology",
@@ -101,6 +118,7 @@ def _search(q: str | None = None, section: str | None = None, page_size: int = 1
     if section:
         params["section"] = section
     try:
+        _throttle()
         resp = httpx.get(f"{GUARDIAN_BASE}/search", params=params, timeout=20)
         data = resp.json()
         results = data.get("response", {}).get("results") or []
@@ -112,7 +130,9 @@ def _search(q: str | None = None, section: str | None = None, page_size: int = 1
 
 def fetch_guardian_stories(user) -> list[dict]:
     """
-    Fetch from The Guardian. Budget: ~20 calls per generation (5,000 req/day).
+    Fetch from The Guardian. Budget: ~21 calls per generation (500 req/day → ~23 gens/day).
+    Rate limit: 1 req/s — enforced by _throttle() inside _search().
+    Note: fetch_local_boost() consumes 3 additional Guardian calls per generation.
 
     Allocation:
       2 calls  — N: city exact phrase + city broad search
