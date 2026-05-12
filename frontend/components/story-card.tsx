@@ -21,6 +21,10 @@ export function StoryCard({ story, featured = false }: Props) {
   const [imgFailed, setImgFailed] = useState(false);
   const showImage = !!story.image_url && !imgFailed;
   const aspect = featured ? "21 / 9" : "16 / 10";
+  // The model occasionally drops these fields when its JSON gets truncated at
+  // the tail. Defaulting here so a single bad story can't crash the layer tab.
+  const matchedTags = story.matched_tags ?? [];
+  const firstTag = matchedTags[0];
 
   return (
     <a
@@ -87,12 +91,12 @@ export function StoryCard({ story, featured = false }: Props) {
 
         {/* Footer meta */}
         <div className="flex items-center gap-3 mt-5 pt-4" style={{ borderTop: "1px solid #ede8df" }}>
-          {story.matched_tags[0] && (
+          {firstTag && (
             <span className="text-[10px] tracking-[0.18em] uppercase" style={{ color: "#b8962e", fontWeight: 600 }}>
-              {story.matched_tags[0]}
+              {firstTag}
             </span>
           )}
-          {story.matched_tags[0] && story.published_at && (
+          {firstTag && story.published_at && (
             <span style={{ color: "#d8d0c4" }}>·</span>
           )}
           {story.published_at && (

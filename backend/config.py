@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     NEWSDATA_API_KEY: str
     NEWSAPI_API_KEY: str
     NEWSCATCHER_API_KEY: str
+    GNEWS_API_KEY: str = ""
+    GUARDIAN_API_KEY: str = ""
+    NYTIMES_API_KEY: str = ""
 
     class Config:
         # Reads from environment variables (set by Docker); falls back to .env if present

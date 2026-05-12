@@ -30,6 +30,24 @@ const STATUS_LABEL = {
   error:   { text: "Failed",      color: "#b91c1c" },
 };
 
+// Mirrors STAGE_LABELS in the dashboard so the Activity panel speaks the same
+// language as the inline progress bar.
+const STAGE_LABELS: Record<string, string> = {
+  queued: "Queued",
+  reading_cache: "Reading cache",
+  fetching_news: "Fetching the wires",
+  triaging: "Classifying stories",
+  gap_filling: "Filling local gaps",
+  writing: "Writing the briefing",
+  finalizing: "Finalizing",
+  completed: "Complete",
+};
+
+function stageLabel(stage?: string): string {
+  if (!stage) return "Working";
+  return STAGE_LABELS[stage] ?? "Working";
+}
+
 interface Props {
   open: boolean;
   onClose: () => void;
@@ -160,6 +178,39 @@ export function NotificationPanel({ open, onClose }: Props) {
                 <p className="text-[12px] leading-relaxed mb-2" style={{ color: "#8b9cb8" }}>
                   {task.message}
                 </p>
+
+                {/* Live progress bar — only while running */}
+                {task.status === "running" && (
+                  <div className="mt-3 mb-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <span
+                        className="text-[10px] tracking-[0.18em] uppercase"
+                        style={{ color: "#8b9cb8", fontWeight: 600 }}
+                      >
+                        {stageLabel(task.stage)}
+                      </span>
+                      <span
+                        className="text-[10px] tracking-[0.18em] uppercase"
+                        style={{ color: "#b8962e", fontWeight: 600 }}
+                      >
+                        {task.progress ?? 0}%
+                      </span>
+                    </div>
+                    <div
+                      className="w-full h-[4px]"
+                      style={{ background: "#1e2d4a", overflow: "hidden" }}
+                      role="progressbar"
+                      aria-valuenow={task.progress ?? 0}
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                    >
+                      <div
+                        className="h-full transition-all duration-500 ease-out"
+                        style={{ width: `${Math.max(2, task.progress ?? 0)}%`, background: "#b8962e" }}
+                      />
+                    </div>
+                  </div>
+                )}
 
                 <p className="text-[10px] tracking-[0.15em] uppercase" style={{ color: "#6b7fa0" }}>
                   Duration · {duration(task)}

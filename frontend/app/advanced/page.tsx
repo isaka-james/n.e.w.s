@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Loader2, RefreshCw, Brain } from "lucide-react";
 import { api } from "@/lib/api";
 import { useNotifications } from "@/lib/notifications-context";
@@ -13,6 +13,13 @@ interface Config {
   useNewsdata: boolean;
   useNewsapi: boolean;
   useNewscatcher: boolean;
+  useGnews: boolean;
+  useGuardian: boolean;
+  useNytimes: boolean;
+  minCity: number;
+  minCountry: number;
+  minContinent: number;
+  minWorld: number;
 }
 
 const DEFAULTS: Config = {
@@ -21,6 +28,13 @@ const DEFAULTS: Config = {
   useNewsdata: true,
   useNewsapi: true,
   useNewscatcher: true,
+  useGnews: true,
+  useGuardian: true,
+  useNytimes: true,
+  minCity: 10,
+  minCountry: 10,
+  minContinent: 10,
+  minWorld: 30,
 };
 
 function loadConfig(): Config {
@@ -41,8 +55,59 @@ export default function AdvancedPage() {
   const { start, finish } = useNotifications();
   const [config, setConfig] = useState<Config>(DEFAULTS);
   const [running, setRunning] = useState<RunningOp>(null);
+  // Task-id for the active notification so we can resolve it when done
+  const taskIdRef = useRef<string | null>(null);
 
   useEffect(() => { setConfig(loadConfig()); }, []);
+
+  // On mount: check backend for an in-flight job and restore UI state
+  useEffect(() => {
+    api.reports.status().then((job) => {
+      if (!job || job.status !== "running") return;
+      if (job.type !== "ai-only" && job.type !== "from-scratch") return;
+
+      const op = job.type as RunningOp;
+      setRunning(op);
+      const title = op === "ai-only" ? "Re-run AI Only" : "Regenerate from Scratch";
+      taskIdRef.current = start(
+        `${title} In Progress`,
+        "This operation was in progress when you left. Picking up where you left off…"
+      );
+    }).catch(() => { /* ignore */ });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Poll GET /reports/status every 5 s while running
+  useEffect(() => {
+    if (!running) return;
+
+    const poll = async () => {
+      try {
+        const job = await api.reports.status();
+        if (!job || job.status === "running") return;
+
+        setRunning(null);
+
+        if (!taskIdRef.current) return;
+
+        if (job.status === "completed") {
+          finish(
+            taskIdRef.current,
+            "success",
+            running === "from-scratch"
+              ? "Fresh briefing ready — news re-fetched and re-written."
+              : "Briefing updated — AI re-ran on today’s story cache."
+          );
+        } else {
+          finish(taskIdRef.current, "error", job.error_message ?? "Report generation failed.");
+        }
+        taskIdRef.current = null;
+      } catch { /* keep polling */ }
+    };
+
+    const id = setInterval(poll, 5000);
+    return () => clearInterval(id);
+  }, [running, finish]);
 
   const update = (patch: Partial<Config>) => {
     const next = { ...config, ...patch };
@@ -50,7 +115,8 @@ export default function AdvancedPage() {
     saveConfig(next);
   };
 
-  const noSources = !config.useNewsdata && !config.useNewsapi && !config.useNewscatcher;
+  const noSources = !config.useNewsdata && !config.useNewsapi && !config.useNewscatcher
+    && !config.useGnews && !config.useGuardian && !config.useNytimes;
 
   const handleRegenerate = async (fromScratch: boolean) => {
     if (noSources) return;
@@ -62,8 +128,9 @@ export default function AdvancedPage() {
       ? "Discarding cached stories, re-fetching from all enabled sources, then re-running AI…"
       : "Re-running DeepSeek on today's cached stories with updated settings…";
 
-    const taskId = start(title, startMsg);
+    taskIdRef.current = start(title, startMsg);
     try {
+      // POST returns immediately with job_id; polling effect drives completion
       await api.reports.generate({
         force: true,
         fresh: fromScratch,
@@ -72,14 +139,21 @@ export default function AdvancedPage() {
         useNewsdata: config.useNewsdata,
         useNewsapi: config.useNewsapi,
         useNewscatcher: config.useNewscatcher,
+        useGnews: config.useGnews,
+        useGuardian: config.useGuardian,
+        useNytimes: config.useNytimes,
+        minCity: config.minCity,
+        minCountry: config.minCountry,
+        minContinent: config.minContinent,
+        minWorld: config.minWorld,
+        jobType: op,
       });
-      finish(taskId, "success", fromScratch
-        ? "Fresh briefing ready — news re-fetched and re-written."
-        : "Briefing updated — AI re-ran on today's story cache.");
     } catch (err: unknown) {
-      finish(taskId, "error", err instanceof Error ? err.message : "Failed");
-    } finally {
       setRunning(null);
+      if (taskIdRef.current) {
+        finish(taskIdRef.current, "error", err instanceof Error ? err.message : "Failed");
+        taskIdRef.current = null;
+      }
     }
   };
 
@@ -178,13 +252,17 @@ export default function AdvancedPage() {
         {/* News sources */}
         <Section number="III" title="News sources">
           <p className="text-[13px] mb-5" style={{ color: "#787878" }}>
-            Applies on the next fresh fetch.
+            Applies on the next fresh fetch. Sources now fetch up to 15–20 targeted queries each per generation,
+            making full use of their daily API quotas.
           </p>
           <div style={{ border: "1px solid #d8d0c4" }}>
             {[
-              { key: "useNewsdata"    as keyof Config, label: "NewsData.io",     desc: "200 req/day · country, city, continent, tag searches" },
-              { key: "useNewsapi"     as keyof Config, label: "NewsAPI.org",     desc: "100 req/day · top headlines by country + category" },
-              { key: "useNewscatcher" as keyof Config, label: "NewsCatcher API", desc: "Free trial · latest headlines + city and topic searches" },
+              { key: "useNewsdata"    as keyof Config, label: "NewsData.io",       desc: "200 req/day · country, city, continent, tag searches + trending" },
+              { key: "useNewsapi"     as keyof Config, label: "NewsAPI.org",       desc: "100 req/day · top headlines by country + category" },
+              { key: "useNewscatcher" as keyof Config, label: "NewsCatcher API",   desc: "500 req/day · latest headlines, city and topic searches" },
+              { key: "useGnews"       as keyof Config, label: "GNews",             desc: "100 req/day · global top-headlines by category + country" },
+              { key: "useGuardian"    as keyof Config, label: "The Guardian",      desc: "5,000 req/day · world, tech, science + keyword searches" },
+              { key: "useNytimes"     as keyof Config, label: "New York Times",    desc: "Generous limit · top stories, most-popular, article search" },
             ].map(({ key, label, desc }, i, arr) => (
               <label
                 key={key}
@@ -216,6 +294,48 @@ export default function AdvancedPage() {
               At least one source must be enabled to generate a report.
             </p>
           )}
+        </Section>
+
+        {/* Layer minimums */}
+        <Section number="IV" title="Layer minimums">
+          <p className="text-[13px] mb-5" style={{ color: "#787878" }}>
+            Minimum stories required per layer before the briefing is written. The AI will lower its
+            score threshold to fill a layer if fewer stories are available.
+          </p>
+          <div className="space-y-8 p-7" style={{ background: "#ffffff", border: "1px solid #d8d0c4" }}>
+            <SliderField
+              label="City (N) minimum"
+              value={config.minCity}
+              min={3} max={30} step={1}
+              display={`${config.minCity}`}
+              hint={["Lean", "Dense"]}
+              onChange={(v) => update({ minCity: Math.round(v) })}
+            />
+            <SliderField
+              label="Country (E) minimum"
+              value={config.minCountry}
+              min={3} max={30} step={1}
+              display={`${config.minCountry}`}
+              hint={["Lean", "Dense"]}
+              onChange={(v) => update({ minCountry: Math.round(v) })}
+            />
+            <SliderField
+              label="Continent (W) minimum"
+              value={config.minContinent}
+              min={3} max={30} step={1}
+              display={`${config.minContinent}`}
+              hint={["Lean", "Dense"]}
+              onChange={(v) => update({ minContinent: Math.round(v) })}
+            />
+            <SliderField
+              label="World (S) minimum"
+              value={config.minWorld}
+              min={5} max={60} step={5}
+              display={`${config.minWorld}`}
+              hint={["Focused", "Expansive"]}
+              onChange={(v) => update({ minWorld: Math.round(v) })}
+            />
+          </div>
         </Section>
 
         {/* Note */}

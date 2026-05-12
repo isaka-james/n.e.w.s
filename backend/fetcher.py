@@ -1,5 +1,7 @@
 import logging
 import httpx
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, datetime, timedelta
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -95,6 +97,26 @@ COUNTRY_CODE_MAP = {
 }
 
 
+def _is_within_3_days(pub_date_str: str) -> bool:
+    """Return True if pub_date_str falls on today, yesterday, or the day before.
+
+    Articles with an unparseable or missing date are kept (lenient fallback).
+    """
+    if not pub_date_str:
+        return True
+    today = date.today()
+    cutoff = today - timedelta(days=2)
+    try:
+        # Normalise both "2024-05-12 14:00:00" and ISO 8601 "2024-05-12T14:00:00Z"
+        normalized = pub_date_str.strip().replace(" ", "T")
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        pub_day = datetime.fromisoformat(normalized).date()
+    except (ValueError, TypeError):
+        return True
+    return pub_day >= cutoff
+
+
 def _clean_article(article: dict) -> dict | None:
     """Return a cleaned article dict with only fields useful for DeepSeek, or None to drop it."""
     # Drop press releases
@@ -120,10 +142,16 @@ def _clean_article(article: dict) -> dict | None:
             return None
         return val
 
-    country_raw = article.get("country") or []
-    country_code = country_raw[0] if country_raw else None
-    # Decode ISO code → full name so DeepSeek can compare against user.country
-    country = CODE_TO_COUNTRY.get(country_code, country_code) if country_code else None
+    country_raw = article.get("country")
+    if isinstance(country_raw, list):
+        # NewsData.io returns ["us"] — decode ISO code → full name
+        country_code = country_raw[0] if country_raw else None
+        country = CODE_TO_COUNTRY.get(country_code, country_code) if country_code else None
+    elif isinstance(country_raw, str):
+        # Other fetchers already provide the full country name
+        country = country_raw
+    else:
+        country = None
 
     return {
         "article_id": article.get("article_id", ""),
@@ -162,13 +190,15 @@ def _fetch_newsdata(user) -> list[dict]:
     """Pull from NewsData.io across all four geographic layers."""
     country_code = COUNTRY_CODE_MAP.get(user.country, "")
     continent_keyword = CONTINENT_KEYWORDS.get(user.continent, user.continent)
-    high_tags = [t["name"] for t in user.tags if t.get("priority") == "high"][:3]
+    high_tags = [t["name"] for t in (user.tags or []) if t.get("priority") == "high"][:3]
 
     raw: list[dict] = []
     if country_code:
         raw += _fetch_page({"country": country_code})
     raw += _fetch_page({"q": user.city})
     raw += _fetch_page({"q": continent_keyword})
+    # Trending/viral stories — top prioritydomain without geo filter
+    raw += _fetch_page({"prioritydomain": "top"})
     for tag in high_tags:
         raw += _fetch_page({"q": tag})
     return raw
@@ -179,28 +209,74 @@ def fetch_stories(
     use_newsdata: bool = True,
     use_newsapi: bool = True,
     use_newscatcher: bool = True,
+    use_gnews: bool = True,
+    use_guardian: bool = True,
+    use_nytimes: bool = True,
+    on_source_done=None,
 ) -> list[dict]:
     """
     Fetch and merge stories from all enabled news sources.
-    Deduplicates by article_id, cleans, caps at 60 for DeepSeek.
+    Deduplicates by article_id, cleans, caps at 120 for DeepSeek.
+    Source budget per generation:
+      NewsData   : ~7 calls  (200/day, synchronous)
+      NewsAPI    : ~13 calls (100/day, synchronous)
+      NewsCatcher: async CatchAll job — reuses today's cached records when possible;
+                   short ~60s inline poll when a new job is needed.
+      GNews      : ~10 calls (100/day, synchronous)
+      Guardian   : ~18 calls (5,000/day, synchronous)
+      NYTimes    : ~14 calls (4,000/day, synchronous)
     """
     from newsapi_fetcher import fetch_newsapi_stories
     from newscatcher_fetcher import fetch_newscatcher_stories
+    from gnews_fetcher import fetch_gnews_stories
+    from guardian_fetcher import fetch_guardian_stories
+    from nytimes_fetcher import fetch_nytimes_stories
+
+    # Map each enabled source to its fetcher function
+    enabled: list[tuple[str, object]] = []
+    if use_newsdata:    enabled.append(("newsdata",    _fetch_newsdata))
+    if use_newsapi:     enabled.append(("newsapi",     fetch_newsapi_stories))
+    if use_newscatcher: enabled.append(("newscatcher", fetch_newscatcher_stories))
+    if use_gnews:       enabled.append(("gnews",       fetch_gnews_stories))
+    if use_guardian:    enabled.append(("guardian",    fetch_guardian_stories))
+    if use_nytimes:     enabled.append(("nytimes",     fetch_nytimes_stories))
 
     all_raw: list[dict] = []
-    if use_newsdata:
-        all_raw += _fetch_newsdata(user)
-    if use_newsapi:
-        all_raw += fetch_newsapi_stories(user)
-    if use_newscatcher:
-        all_raw += fetch_newscatcher_stories(user)
+
+    if not enabled:
+        return []
+
+    total_sources = len(enabled)
+    completed_sources = 0
+
+    # Run all source fetchers in parallel — dramatically reduces total fetch time
+    with ThreadPoolExecutor(max_workers=total_sources) as executor:
+        future_to_name = {
+            executor.submit(fn, user): name
+            for name, fn in enabled
+        }
+        for future in as_completed(future_to_name):
+            name = future_to_name[future]
+            try:
+                all_raw += future.result()
+            except Exception as exc:
+                # Include the full traceback so a recurring source failure is
+                # debuggable from logs alone (the fetch silently drops to []
+                # for the affected source and the pipeline continues).
+                logger.exception("Source '%s' raised an unexpected error: %s", name, exc)
+            completed_sources += 1
+            if on_source_done is not None:
+                try:
+                    on_source_done(name, completed_sources, total_sources)
+                except Exception as exc:
+                    logger.warning("on_source_done callback failed: %s", exc)
 
     seen_ids: set[str] = set()
     cleaned: list[dict] = []
 
     for raw in all_raw:
         article_id = raw.get("article_id", "")
-        if article_id in seen_ids:
+        if not article_id or article_id in seen_ids:
             continue
         seen_ids.add(article_id)
 
@@ -208,5 +284,69 @@ def fetch_stories(
         if clean:
             cleaned.append(clean)
 
-    # Cap at 60 to keep the DeepSeek payload manageable
-    return cleaned[:60]
+    # Apply 3-day recency window: keep today, yesterday, and the day before
+    cleaned = [a for a in cleaned if _is_within_3_days(a.get("pubDate", ""))]
+
+    # Cap at 120 — large enough for 6 sources while keeping the DeepSeek payload manageable
+    return cleaned[:120]
+
+
+def fetch_local_boost(user, seen_ids: set[str]) -> list[dict]:
+    """
+    Gap-fill targeted fetch for N (city) and E (country) layers.
+    Called when triage finds fewer than 10 articles for city or country.
+
+    Uses Guardian (5 000/day) and NYTimes (4 000/day) most aggressively since
+    they have the highest daily quotas. NewsData contributes one extra country call.
+
+    Mutates `seen_ids` so internal duplicates are removed automatically.
+    Returns already-cleaned articles that were NOT in seen_ids before this call.
+    """
+    from guardian_fetcher import _search as _guardian_search, _normalize as _guardian_normalize
+    from nytimes_fetcher import _fetch_article_search as _nyt_search
+
+    new_raw: list[dict] = []
+
+    # ── Guardian boost ────────────────────────────────────────────────────────
+    def _add_guardian(items: list[dict], category: str | None = None, country: str | None = None) -> None:
+        for item in items:
+            n = _guardian_normalize(item, category=category, country=country)
+            if n:
+                new_raw.append(n)
+
+    # Country: larger page than the 15 used in the first pass
+    _add_guardian(_guardian_search(q=user.country, page_size=30), category="national", country=user.country)
+    # City: larger page
+    _add_guardian(_guardian_search(q=user.city, page_size=25), category="local", country=user.country)
+    # Continent keyword — lifts W layer too, which may promote to N/E if city/country appears
+    continent_kw = {
+        "Africa": "Africa", "Asia": "Asia", "Europe": "Europe",
+        "North America": "Americas", "South America": "Latin America", "Oceania": "Pacific",
+    }.get(user.continent, user.continent)
+    if continent_kw:
+        _add_guardian(_guardian_search(q=continent_kw, page_size=15), category="regional")
+
+    # ── NYTimes boost ─────────────────────────────────────────────────────────
+    for art in _nyt_search(user.country, page_size=20, country=user.country):
+        new_raw.append(art)
+    for art in _nyt_search(user.city, page_size=15, country=user.country):
+        new_raw.append(art)
+
+    # ── NewsData boost (1 extra call — 200/day budget is tighter) ────────────
+    country_code = COUNTRY_CODE_MAP.get(user.country, "")
+    if country_code:
+        new_raw += _fetch_page({"country": country_code})
+
+    # Deduplicate, clean, and apply 3-day recency window
+    results: list[dict] = []
+    for raw in new_raw:
+        article_id = raw.get("article_id", "")
+        if not article_id or article_id in seen_ids:
+            continue
+        seen_ids.add(article_id)
+        clean = _clean_article(raw)
+        if clean and _is_within_3_days(clean.get("pubDate", "")):
+            results.append(clean)
+
+    logger.info("fetch_local_boost: returned %d new articles", len(results))
+    return results

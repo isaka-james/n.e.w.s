@@ -25,23 +25,41 @@ const COUNTRIES = [
 ];
 
 const PRESET_TAGS = [
-  { name: "Technology", emoji: "💻" },
-  { name: "Politics",   emoji: "🏛️" },
-  { name: "Business",   emoji: "📈" },
-  { name: "Science",    emoji: "🔬" },
-  { name: "Health",     emoji: "🏥" },
-  { name: "Climate",    emoji: "🌍" },
-  { name: "Sports",     emoji: "⚽" },
-  { name: "Entertainment", emoji: "🎬" },
-  { name: "Finance",    emoji: "💰" },
-  { name: "AI",         emoji: "🤖" },
-  { name: "Security",   emoji: "🔒" },
-  { name: "Culture",    emoji: "🎭" },
-  { name: "Education",  emoji: "📚" },
-  { name: "Travel",     emoji: "✈️" },
-  { name: "Food",       emoji: "🍽️" },
-  { name: "Energy",     emoji: "⚡" },
+  { name: "Technology",   emoji: "💻" },
+  { name: "AI",           emoji: "🤖" },
+  { name: "Cybersecurity",emoji: "🔐" },
+  { name: "Science",      emoji: "🔬" },
+  { name: "Space",        emoji: "🚀" },
+  { name: "Health",       emoji: "🏥" },
+  { name: "Medicine",     emoji: "💊" },
+  { name: "Mental Health",emoji: "🧠" },
+  { name: "Business",     emoji: "📈" },
+  { name: "Finance",      emoji: "💰" },
+  { name: "Economy",      emoji: "📊" },
+  { name: "Startup",      emoji: "💡" },
+  { name: "Crypto",       emoji: "🪙" },
+  { name: "Politics",     emoji: "🏛️" },
+  { name: "Geopolitics",  emoji: "🌐" },
+  { name: "Defense",      emoji: "⚔️" },
+  { name: "Law",          emoji: "⚖️" },
+  { name: "Climate",      emoji: "🌍" },
+  { name: "Environment",  emoji: "🌿" },
+  { name: "Energy",       emoji: "⚡" },
+  { name: "Sports",       emoji: "⚽" },
+  { name: "Entertainment",emoji: "🎬" },
+  { name: "Music",        emoji: "🎵" },
+  { name: "Gaming",       emoji: "🎮" },
+  { name: "Culture",      emoji: "🎭" },
+  { name: "Fashion",      emoji: "👗" },
+  { name: "Education",    emoji: "📚" },
+  { name: "Travel",       emoji: "✈️" },
+  { name: "Food",         emoji: "🍽️" },
+  { name: "Real Estate",  emoji: "🏠" },
+  { name: "Automotive",   emoji: "🚗" },
+  { name: "Philosophy",   emoji: "🦉" },
 ];
+
+const PRESET_TAG_NAMES = new Set(PRESET_TAGS.map((p) => p.name));
 
 type Priority = "high" | "medium" | "low";
 
@@ -56,6 +74,22 @@ export default function SettingsPage() {
   const [blockedInput, setBlockedInput] = useState("");
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [customTagInput, setCustomTagInput] = useState("");
+  const [customTagEmoji, setCustomTagEmoji] = useState("🏷️");
+  const [autoEnabled, setAutoEnabled] = useState(false);
+  const [autoTime, setAutoTime] = useState("07:00");
+  // Display current UTC time so users can calibrate
+  const [utcNow, setUtcNow] = useState("");
+
+  useEffect(() => {
+    const fmt = () => {
+      const d = new Date();
+      setUtcNow(`${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")} UTC`);
+    };
+    fmt();
+    const id = setInterval(fmt, 30_000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     if (user) {
@@ -64,6 +98,12 @@ export default function SettingsPage() {
       setCountry(user.country);
       setTags(user.tags);
       setBlockedWords(user.blocked_words);
+      if (user.auto_generate_time) {
+        setAutoEnabled(true);
+        setAutoTime(user.auto_generate_time);
+      } else {
+        setAutoEnabled(false);
+      }
     }
   }, [user]);
 
@@ -81,6 +121,21 @@ export default function SettingsPage() {
     setTags(tags.map((t) => (t.name === tagName ? { ...t, priority } : t)));
   };
 
+  const addCustomTag = () => {
+    const name = customTagInput.trim();
+    if (!name) return;
+    if (tags.find((t) => t.name.toLowerCase() === name.toLowerCase())) return;
+    setTags([...tags, { name, emoji: customTagEmoji || "🏷️", priority: "medium" }]);
+    setCustomTagInput("");
+    setCustomTagEmoji("🏷️");
+    markDirty();
+  };
+
+  const removeCustomTag = (tagName: string) => {
+    setTags(tags.filter((t) => t.name !== tagName));
+    markDirty();
+  };
+
   const addBlocked = () => {
     const word = blockedInput.trim().toLowerCase();
     if (word && !blockedWords.includes(word)) {
@@ -93,7 +148,14 @@ export default function SettingsPage() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.users.update({ name, city, country, tags, blocked_words: blockedWords });
+      await api.users.update({
+        name,
+        city,
+        country,
+        tags,
+        blocked_words: blockedWords,
+        auto_generate_time: autoEnabled ? autoTime : null,
+      });
       await refreshUser();
       setDirty(false);
       toast.success("Settings saved.");
@@ -169,7 +231,7 @@ export default function SettingsPage() {
 
         {/* Topics */}
         <Section number="III" title="Topics">
-          <div className="flex flex-wrap gap-2 mb-6">
+          <div className="flex flex-wrap gap-2 mb-5">
             {PRESET_TAGS.map((preset) => {
               const selected = tags.find((t) => t.name === preset.name);
               return (
@@ -190,6 +252,41 @@ export default function SettingsPage() {
             })}
           </div>
 
+          {/* Custom topic input */}
+          <div className="mb-6">
+            <p className="text-[10px] tracking-[0.22em] uppercase mb-3" style={{ color: "#3a3a3a", fontWeight: 600 }}>
+              Add custom topic
+            </p>
+            <div className="flex gap-0">
+              <input
+                type="text"
+                value={customTagEmoji}
+                onChange={(e) => setCustomTagEmoji(e.target.value || "🏷️")}
+                maxLength={2}
+                className="editorial-input text-center"
+                style={{ width: "52px", flexShrink: 0 }}
+                placeholder="🏷️"
+              />
+              <input
+                type="text"
+                value={customTagInput}
+                onChange={(e) => setCustomTagInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCustomTag(); } }}
+                placeholder="Topic name…"
+                className="editorial-input flex-1"
+                style={{ marginLeft: "-1px" }}
+              />
+              <button
+                type="button"
+                onClick={addCustomTag}
+                className="px-5"
+                style={{ background: "#0a0f1e", color: "#ffffff", marginLeft: "-1px" }}
+              >
+                <Plus size={16} />
+              </button>
+            </div>
+          </div>
+
           {tags.length > 0 && (
             <div style={{ background: "#ffffff", border: "1px solid #d8d0c4" }}>
               <div className="px-5 py-3" style={{ background: "#ede8df" }}>
@@ -203,22 +300,33 @@ export default function SettingsPage() {
                     <span className="text-[14px]" style={{ fontFamily: "'Rufina', Georgia, serif", color: "#0a0f1e" }}>
                       {tag.emoji ?? "🏷️"} {tag.name}
                     </span>
-                    <div className="flex gap-1">
-                      {(["high", "medium", "low"] as Priority[]).map((p) => (
+                    <div className="flex items-center gap-3">
+                      <div className="flex gap-1">
+                        {(["high", "medium", "low"] as Priority[]).map((p) => (
+                          <button
+                            key={p}
+                            type="button"
+                            onClick={() => setPriority(tag.name, p)}
+                            className="px-3 py-1 text-[10px] tracking-[0.15em] uppercase font-semibold transition-colors"
+                            style={{
+                              background: tag.priority === p ? "#b8962e" : "transparent",
+                              border: tag.priority === p ? "1px solid #b8962e" : "1px solid #d8d0c4",
+                              color: tag.priority === p ? "#ffffff" : "#787878",
+                            }}
+                          >
+                            {p}
+                          </button>
+                        ))}
+                      </div>
+                      {!PRESET_TAG_NAMES.has(tag.name) && (
                         <button
-                          key={p}
                           type="button"
-                          onClick={() => setPriority(tag.name, p)}
-                          className="px-3 py-1 text-[10px] tracking-[0.15em] uppercase font-semibold transition-colors"
-                          style={{
-                            background: tag.priority === p ? "#b8962e" : "transparent",
-                            border: tag.priority === p ? "1px solid #b8962e" : "1px solid #d8d0c4",
-                            color: tag.priority === p ? "#ffffff" : "#787878",
-                          }}
+                          onClick={() => removeCustomTag(tag.name)}
+                          title="Remove custom topic"
                         >
-                          {p}
+                          <X size={13} style={{ color: "#aaa" }} />
                         </button>
-                      ))}
+                      )}
                     </div>
                   </div>
                 ))}
@@ -268,6 +376,78 @@ export default function SettingsPage() {
               ))}
             </div>
           )}
+        </Section>
+
+        {/* Automation */}
+        <Section number="V" title="Automation">
+          <div
+            className="p-6"
+            style={{ background: "#ffffff", border: "1px solid #d8d0c4" }}
+          >
+            {/* Enable toggle */}
+            <label className="flex items-start gap-4 cursor-pointer">
+              <div
+                role="switch"
+                aria-checked={autoEnabled}
+                tabIndex={0}
+                onClick={() => { setAutoEnabled(!autoEnabled); markDirty(); }}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { setAutoEnabled(!autoEnabled); markDirty(); } }}
+                className="mt-0.5 flex-shrink-0 cursor-pointer"
+                style={{
+                  width: 40, height: 22,
+                  borderRadius: 11,
+                  background: autoEnabled ? "#0a0f1e" : "#d8d0c4",
+                  position: "relative",
+                  transition: "background 0.2s",
+                }}
+              >
+                <span
+                  style={{
+                    position: "absolute",
+                    top: 3,
+                    left: autoEnabled ? 21 : 3,
+                    width: 16, height: 16,
+                    borderRadius: "50%",
+                    background: "#ffffff",
+                    transition: "left 0.2s",
+                  }}
+                />
+              </div>
+              <div>
+                <p className="text-[16px] mb-1" style={{ fontFamily: "'Rufina', Georgia, serif", color: "#0a0f1e" }}>
+                  Auto-generate daily briefing
+                </p>
+                <p className="text-[12px] leading-relaxed" style={{ color: "#787878" }}>
+                  N.E.W.S. will automatically fetch news and write your briefing every day at the
+                  scheduled time. If the server restarts after the scheduled time, your briefing
+                  will be prepared immediately on startup.
+                </p>
+              </div>
+            </label>
+
+            {/* Time picker — only shown when enabled */}
+            {autoEnabled && (
+              <div className="mt-5 pt-5" style={{ borderTop: "1px solid #ede8df" }}>
+                <Field label="Daily generation time (UTC 24-hour)">
+                  <div className="flex items-center gap-4">
+                    <input
+                      type="time"
+                      value={autoTime}
+                      onChange={(e) => { setAutoTime(e.target.value); markDirty(); }}
+                      className="editorial-input"
+                      style={{ width: "auto" }}
+                    />
+                    <span className="text-[12px]" style={{ color: "#787878" }}>
+                      Current UTC: <strong style={{ color: "#3a3a3a" }}>{utcNow}</strong>
+                    </span>
+                  </div>
+                </Field>
+                <p className="text-[11px] mt-3 leading-relaxed" style={{ color: "#aaa" }}>
+                  Set this in UTC. Example: if you want a 7 AM briefing in UTC+3, enter 04:00.
+                </p>
+              </div>
+            )}
+          </div>
         </Section>
       </div>
     </div>

@@ -1,5 +1,6 @@
 import hashlib
 import logging
+from datetime import date, timedelta
 import httpx
 from config import settings
 
@@ -48,8 +49,8 @@ def _normalize(article: dict, country: str | None = None, category: str | None =
     title = (article.get("title") or "").strip()
     description = (article.get("description") or "").strip()
 
-    # Drop removed/deleted articles
-    if title in ("[Removed]", "") and not description:
+    # Drop deleted/removed articles regardless of description
+    if title == "[Removed]":
         return None
     if not title and not description:
         return None
@@ -82,7 +83,7 @@ def _normalize(article: dict, country: str | None = None, category: str | None =
 
 
 def _get(endpoint: str, params: dict) -> list[dict]:
-    call_params = {**params, "apiKey": settings.NEWSAPI_API_KEY, "pageSize": 20}
+    call_params = {**params, "apiKey": settings.NEWSAPI_API_KEY, "pageSize": 100}
     log_params = {k: v for k, v in call_params.items() if k != "apiKey"}
     try:
         resp = httpx.get(endpoint, params=call_params, timeout=20)
@@ -96,58 +97,138 @@ def _get(endpoint: str, params: dict) -> list[dict]:
         return []
 
 
+# Continent keyword map for broad W-layer coverage
+CONTINENT_KEYWORDS: dict[str, str] = {
+    "Africa": "Africa",
+    "Asia": "Asia",
+    "Europe": "Europe",
+    "North America": "Americas",
+    "South America": "Americas",
+    "Latin America": "Latin America",
+    "Oceania": "Pacific",
+    "Middle East": "Middle East",
+}
+
+# All NewsAPI categories — used for broad country coverage
+ALL_CATEGORIES = ["general", "business", "entertainment", "health", "science", "sports", "technology"]
+
+
 def fetch_newsapi_stories(user) -> list[dict]:
     """
-    Fetch stories from NewsAPI.org to supplement NewsData.io.
-    Stays within 100 req/day: 1 country + 1 city + up to 3 tag calls = max 5 calls.
+    Fetch stories from NewsAPI.org.
+    Budget: ~15 calls per generation (100 req/day → ~7 generations/day).
+
+    Allocation:
+      2 calls  — E: country general + business headlines
+      2 calls  — N: city exact phrase (by date) + city broad (by relevance)
+      1 call   — W: continent keyword search
+      up to 5  — S: high-priority tag categories or keyword searches
+      up to 3  — S: medium-priority tag keyword searches
+      up to 2  — E: category headlines matching enabled tags
     """
     country_code = NEWSAPI_COUNTRY_CODES.get(user.country)
     all_raw: list[dict] = []
+    used_categories: set[str] = set()
+    from_date = (date.today() - timedelta(days=2)).isoformat()
 
-    # E layer: top headlines for the user's country
+    # --- E layer: country top-headlines (general) ---
     if country_code:
-        raw = _get(NEWSAPI_HEADLINES, {"country": country_code, "language": "en"})
-        for a in raw:
-            n = _normalize(a, country=user.country, category="general")
-            if n:
-                all_raw.append(n)
+        for cat in ("general", "business"):
+            raw = _get(NEWSAPI_HEADLINES, {"country": country_code, "category": cat})
+            for a in raw:
+                n = _normalize(a, country=user.country, category=cat)
+                if n:
+                    all_raw.append(n)
+            used_categories.add(cat)
 
-    # N layer: everything mentioning the user's city
+    # --- N layer: city exact phrase, sorted by freshness ---
     city_raw = _get(NEWSAPI_EVERYTHING, {
         "q": f'"{user.city}"',
         "searchIn": "title,description",
         "language": "en",
         "sortBy": "publishedAt",
+        "from": from_date,
     })
     for a in city_raw:
-        n = _normalize(a, country=user.country, category="general")
+        n = _normalize(a, country=user.country, category="local")
         if n:
             all_raw.append(n)
 
-    # S/tag layer: up to 3 high-priority tags
-    high_tags = [t for t in user.tags if t.get("priority") == "high"][:3]
+    # --- N layer: city broad search, sorted by relevance (catches more) ---
+    city_rel = _get(NEWSAPI_EVERYTHING, {
+        "q": user.city,
+        "language": "en",
+        "sortBy": "relevancy",
+        "from": from_date,
+    })
+    for a in city_rel:
+        n = _normalize(a, country=user.country, category="local")
+        if n:
+            all_raw.append(n)
+
+    # --- W layer: continent keyword search ---
+    continent_kw = CONTINENT_KEYWORDS.get(user.continent)
+    if continent_kw:
+        cont_raw = _get(NEWSAPI_EVERYTHING, {
+            "q": continent_kw,
+            "language": "en",
+            "sortBy": "publishedAt",
+            "from": from_date,
+        })
+        for a in cont_raw:
+            n = _normalize(a, country=None, category="world")
+            if n:
+                all_raw.append(n)
+
+    # --- S layer: country + each available category (tech, health, science…) ---
+    if country_code:
+        for cat in ("technology", "health", "science"):
+            if cat not in used_categories:
+                raw = _get(NEWSAPI_HEADLINES, {"country": country_code, "category": cat})
+                for a in raw:
+                    n = _normalize(a, country=user.country, category=cat)
+                    if n:
+                        all_raw.append(n)
+                used_categories.add(cat)
+
+    # --- S layer: high-priority tags (up to 5 calls) ---
+    high_tags = [t for t in (user.tags or []) if t.get("priority") == "high"][:5]
     for tag in high_tags:
         tag_name = tag.get("name", "")
         category = TAG_TO_CATEGORY.get(tag_name)
-
-        if category:
-            # Use top-headlines with category for well-known topics
+        if category and category not in used_categories:
             raw = _get(NEWSAPI_HEADLINES, {"category": category, "language": "en"})
             for a in raw:
                 n = _normalize(a, country=None, category=category)
                 if n:
                     all_raw.append(n)
-        else:
-            # Fall back to /everything keyword search for niche tags
+            used_categories.add(category)
+        elif not category:
             raw = _get(NEWSAPI_EVERYTHING, {
                 "q": tag_name,
                 "language": "en",
                 "sortBy": "publishedAt",
                 "searchIn": "title,description",
+                "from": from_date,
             })
             for a in raw:
                 n = _normalize(a, country=None, category=tag_name.lower())
                 if n:
                     all_raw.append(n)
+
+    # --- S layer: medium-priority tags (up to 3 calls, keyword only) ---
+    med_tags = [t for t in (user.tags or []) if t.get("priority") == "medium"][:3]
+    for tag in med_tags:
+        tag_name = tag.get("name", "")
+        raw = _get(NEWSAPI_EVERYTHING, {
+            "q": tag_name,
+            "language": "en",
+            "sortBy": "publishedAt",
+            "from": from_date,
+        })
+        for a in raw:
+            n = _normalize(a, country=None, category=tag_name.lower())
+            if n:
+                all_raw.append(n)
 
     return all_raw

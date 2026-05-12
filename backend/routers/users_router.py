@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+import re
 from database import get_session
 from models import User
 from auth import get_current_user
@@ -14,6 +15,17 @@ class UpdateProfileRequest(BaseModel):
     country: str | None = None
     tags: list[dict] | None = None
     blocked_words: list[str] | None = None
+    # "HH:MM" (24-hour UTC) or null to disable; validated below
+    auto_generate_time: str | None = None
+
+    @field_validator("auto_generate_time")
+    @classmethod
+    def validate_time(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", v):
+            raise ValueError("auto_generate_time must be HH:MM in 24-hour UTC format (e.g. '07:30')")
+        return v
 
 
 CONTINENT_BY_COUNTRY = {
@@ -65,6 +77,7 @@ def get_me(current_user: User = Depends(get_current_user)):
         "continent": current_user.continent,
         "tags": current_user.tags,
         "blocked_words": current_user.blocked_words,
+        "auto_generate_time": current_user.auto_generate_time,
     }
 
 
@@ -87,6 +100,9 @@ def update_me(
         current_user.tags = payload.tags
     if payload.blocked_words is not None:
         current_user.blocked_words = payload.blocked_words
+    # auto_generate_time: None means "disable", a valid HH:MM means "enable at that time"
+    if "auto_generate_time" in payload.model_fields_set:
+        current_user.auto_generate_time = payload.auto_generate_time
 
     session.add(current_user)
     session.commit()
@@ -101,4 +117,5 @@ def update_me(
         "continent": current_user.continent,
         "tags": current_user.tags,
         "blocked_words": current_user.blocked_words,
+        "auto_generate_time": current_user.auto_generate_time,
     }

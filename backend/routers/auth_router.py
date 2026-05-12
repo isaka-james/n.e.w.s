@@ -93,6 +93,7 @@ class UserResponse(BaseModel):
     continent: str
     tags: list[dict]
     blocked_words: list[str]
+    auto_generate_time: str | None = None
 
 
 class AuthResponse(BaseModel):
@@ -134,6 +135,7 @@ def register(payload: RegisterRequest, session: Session = Depends(get_session)):
             continent=user.continent,
             tags=user.tags,
             blocked_words=user.blocked_words,
+            auto_generate_time=user.auto_generate_time,
         ),
     )
 
@@ -156,5 +158,6 @@ def login(payload: LoginRequest, session: Session = Depends(get_session)):
             continent=user.continent,
             tags=user.tags,
             blocked_words=user.blocked_words,
+            auto_generate_time=user.auto_generate_time,
         ),
     )
