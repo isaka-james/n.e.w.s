@@ -43,17 +43,16 @@ def _run_generation(
     do_force: bool,
     fresh: bool,
     temperature: float,
-    max_stories: int,
     use_newsdata: bool,
     use_newsapi: bool,
     use_newscatcher: bool,
     use_gnews: bool,
     use_guardian: bool,
     use_nytimes: bool,
-    min_city: int = 10,
-    min_country: int = 10,
-    min_continent: int = 10,
-    min_world: int = 30,
+    target_city: int = 10,
+    target_country: int = 10,
+    target_continent: int = 10,
+    target_world: int = 30,
 ):
     """Execute the full generation pipeline and update the job status in DB."""
     # Each background thread needs its own session
@@ -142,32 +141,26 @@ def _run_generation(
                 triage = triage_articles(user, stories)
                 _set_progress(job_id, "triaging", 55)
 
-                # ── Pass 2: Gap-fill loop (up to 2 rounds) ────────────────────
+                # ── Pass 2: Gap-fill loop ─────────────────────────────────────
+                # Only one round, only if a local layer is genuinely empty. We no
+                # longer chase arbitrary "minimums" — the writer can't drop a
+                # layer anymore, so as long as each layer has SOMETHING we move on.
                 seen_ids: set[str] = {s["article_id"] for s in stories}
-                for _attempt in range(2):
-                    n_count = sum(1 for h in triage.values() if h["layer"] == "N")
-                    e_count = sum(1 for h in triage.values() if h["layer"] == "E")
-                    w_count = sum(1 for h in triage.values() if h["layer"] == "W")
+                n_count = sum(1 for h in triage.values() if h["layer"] == "N")
+                e_count = sum(1 for h in triage.values() if h["layer"] == "E")
 
-                    if n_count >= min_city and e_count >= min_country and w_count >= min_continent:
-                        break
-
+                if n_count == 0 or e_count == 0:
                     logger.info(
-                        "Layer gap — N=%d/%d E=%d/%d W=%d/%d; targeted fetch (round %d) user %s",
-                        n_count, min_city, e_count, min_country, w_count, min_continent,
-                        _attempt + 1, user_id,
+                        "Layer gap — N=%d E=%d; running one local boost for user %s",
+                        n_count, e_count, user_id,
                     )
-                    _set_progress(job_id, "gap_filling", 58 + _attempt * 3)
+                    _set_progress(job_id, "gap_filling", 60)
                     extra = fetch_local_boost(user, seen_ids)
-                    if not extra:
-                        logger.info("No additional articles from boost — stopping gap fill")
-                        break
+                    if extra:
+                        stories.extend(extra)
+                        triage.update(triage_articles(user, extra))
 
-                    stories.extend(extra)
-                    extra_triage = triage_articles(user, extra)
-                    triage.update(extra_triage)
-
-                # Hard cap — keep payload manageable (initial 120 + up to ~80 from 2 gap rounds)
+                # Hard cap — keep payload manageable
                 stories = stories[:180]
 
                 session.add(CachedStories(
@@ -178,16 +171,17 @@ def _run_generation(
                 session.commit()
                 _set_progress(job_id, "writing", 65)
 
-            # ── Pass 3: Full writing with layer/score hints ───────────────────
+            # ── Pass 3: Bucket in Python, then write ─────────────────────────
             report_data, raw_response = generate_report(
                 user, stories,
                 temperature=temperature,
-                max_stories=max_stories,
                 triage_hints=triage,
-                min_city=min_city,
-                min_country=min_country,
-                min_continent=min_continent,
-                min_world=min_world,
+                targets={
+                    "N": target_city,
+                    "E": target_country,
+                    "W": target_continent,
+                    "S": target_world,
+                },
             )
 
             report = Report(
@@ -258,17 +252,18 @@ def generate(
     force: bool = Query(default=False, description="Re-run AI using today's cached stories"),
     fresh: bool = Query(default=False, description="Re-fetch news AND re-run AI (implies force)"),
     temperature: float = Query(default=0.7, ge=0.1, le=1.5),
-    max_stories: int = Query(default=15, ge=3, le=25),
     use_newsdata: bool = Query(default=True),
     use_newsapi: bool = Query(default=True),
     use_newscatcher: bool = Query(default=True),
     use_gnews: bool = Query(default=True),
     use_guardian: bool = Query(default=True),
     use_nytimes: bool = Query(default=True),
-    min_city: int = Query(default=10, ge=0, le=50),
-    min_country: int = Query(default=10, ge=0, le=50),
-    min_continent: int = Query(default=10, ge=0, le=50),
-    min_world: int = Query(default=30, ge=0, le=100),
+    # Per-layer story target. Each layer is independently capped at this many.
+    # Names kept as min_* for frontend backwards-compat; they now act as targets.
+    min_city: int = Query(default=8, ge=0, le=30),
+    min_country: int = Query(default=8, ge=0, le=30),
+    min_continent: int = Query(default=8, ge=0, le=30),
+    min_world: int = Query(default=12, ge=0, le=40),
     # "generate" | "ai-only" | "from-scratch" — used for display only
     job_type: str = Query(default="generate"),
     current_user: User = Depends(get_current_user),
@@ -319,17 +314,16 @@ def generate(
             "force": do_force,
             "fresh": fresh,
             "temperature": temperature,
-            "max_stories": max_stories,
             "use_newsdata": use_newsdata,
             "use_newsapi": use_newsapi,
             "use_newscatcher": use_newscatcher,
             "use_gnews": use_gnews,
             "use_guardian": use_guardian,
             "use_nytimes": use_nytimes,
-            "min_city": min_city,
-            "min_country": min_country,
-            "min_continent": min_continent,
-            "min_world": min_world,
+            "target_city": min_city,
+            "target_country": min_country,
+            "target_continent": min_continent,
+            "target_world": min_world,
         },
     )
     session.add(job)
@@ -345,17 +339,16 @@ def generate(
             do_force=do_force,
             fresh=fresh,
             temperature=temperature,
-            max_stories=max_stories,
             use_newsdata=use_newsdata,
             use_newsapi=use_newsapi,
             use_newscatcher=use_newscatcher,
             use_gnews=use_gnews,
             use_guardian=use_guardian,
             use_nytimes=use_nytimes,
-            min_city=min_city,
-            min_country=min_country,
-            min_continent=min_continent,
-            min_world=min_world,
+            target_city=min_city,
+            target_country=min_country,
+            target_continent=min_continent,
+            target_world=min_world,
         ),
         daemon=True,
     )
@@ -431,7 +424,6 @@ def schedule_auto_generation(user_id: str) -> None:
                 "auto": True,
                 "fresh": True,
                 "temperature": 0.7,
-                "max_stories": 15,
                 "use_newsdata": True,
                 "use_newsapi": True,
                 "use_newscatcher": True,
@@ -453,17 +445,16 @@ def schedule_auto_generation(user_id: str) -> None:
             do_force=False,
             fresh=True,
             temperature=0.7,
-            max_stories=15,
             use_newsdata=True,
             use_newsapi=True,
             use_newscatcher=True,
             use_gnews=True,
             use_guardian=True,
             use_nytimes=True,
-            min_city=10,
-            min_country=10,
-            min_continent=10,
-            min_world=30,
+            target_city=8,
+            target_country=8,
+            target_continent=8,
+            target_world=12,
         ),
         daemon=True,
     ).start()

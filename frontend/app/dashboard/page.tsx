@@ -174,9 +174,9 @@ export default function DashboardPage() {
 
       {/* ───── Hero / masthead ───── */}
       <div style={{ borderBottom: "1px solid #d8d0c4", background: "#ffffff" }}>
-        <div className="max-w-6xl mx-auto px-12 py-12">
+        <div className="max-w-6xl mx-auto px-5 sm:px-8 md:px-12 py-8 md:py-12">
 
-          <div className="flex items-end justify-between gap-8 flex-wrap">
+          <div className="flex items-end justify-between gap-6 flex-wrap">
             <div className="flex-1 min-w-0">
               <p
                 className="text-[11px] tracking-[0.25em] uppercase mb-3"
@@ -188,7 +188,7 @@ export default function DashboardPage() {
               </p>
 
               <h1
-                className="text-[44px] leading-[1.05]"
+                className="text-[28px] sm:text-[36px] md:text-[44px] leading-[1.05]"
                 style={{
                   fontFamily: "'Rufina', Georgia, serif",
                   color: "#0a0f1e",
@@ -214,7 +214,7 @@ export default function DashboardPage() {
                 <button
                   onClick={handleGenerate}
                   disabled={generating || fetching}
-                  className="inline-flex items-center gap-2.5 px-7 py-3.5 text-[11px] tracking-[0.22em] uppercase font-semibold transition-opacity disabled:opacity-50"
+                  className="inline-flex items-center gap-2.5 px-5 sm:px-7 py-3.5 text-[11px] tracking-[0.22em] uppercase font-semibold transition-opacity disabled:opacity-50"
                   style={{ background: "#0a0f1e", color: "#ffffff" }}
                 >
                   {generating
@@ -228,7 +228,7 @@ export default function DashboardPage() {
       </div>
 
       {/* ───── Body ───── */}
-      <div className="max-w-6xl mx-auto px-12 py-12">
+      <div className="max-w-6xl mx-auto px-5 sm:px-8 md:px-12 py-8 md:py-12">
 
         {/* Loading */}
         {fetching && (
@@ -240,7 +240,7 @@ export default function DashboardPage() {
 
         {/* Generating overlay */}
         {generating && (
-          <div className="py-20 px-12" style={{ background: "#ffffff", border: "1px solid #d8d0c4" }}>
+          <div className="py-16 md:py-20 px-6 md:px-12" style={{ background: "#ffffff", border: "1px solid #d8d0c4" }}>
             <div className="max-w-md mx-auto text-center">
               <Loader2 size={28} className="animate-spin mx-auto mb-6" style={{ color: "#b8962e" }} strokeWidth={1.5} />
               <h3 className="text-[24px] mb-2" style={{ fontFamily: "'Rufina', Georgia, serif", color: "#0a0f1e" }}>
@@ -276,9 +276,9 @@ export default function DashboardPage() {
 
         {/* Empty state */}
         {!fetching && !generating && !report && (
-          <div className="text-center py-24" style={{ background: "#ffffff", border: "1px solid #d8d0c4" }}>
+          <div className="text-center py-16 md:py-24 px-4" style={{ background: "#ffffff", border: "1px solid #d8d0c4" }}>
             <h2
-              className="text-[120px] leading-none mb-6 tracking-[0.06em]"
+              className="text-[64px] sm:text-[90px] md:text-[120px] leading-none mb-6 tracking-[0.06em]"
               style={{ fontFamily: "'Rufina', Georgia, serif", color: "#ede8df", fontWeight: 400 }}
             >
               N·E·W·S
@@ -297,10 +297,10 @@ export default function DashboardPage() {
           <article>
 
             {/* Opening line — editorial pullquote */}
-            <div className="mb-14 max-w-3xl mx-auto text-center">
+            <div className="mb-10 md:mb-14 max-w-3xl mx-auto text-center">
               <div className="gold-rule mx-auto mb-6" style={{ width: "60px" }} />
               <p
-                className="text-[22px] leading-[1.45] italic"
+                className="text-[17px] sm:text-[20px] md:text-[22px] leading-[1.45] italic"
                 style={{ fontFamily: "'Rufina', Georgia, serif", color: "#3a3a3a" }}
               >
                 &ldquo;{report.opening_line}&rdquo;
@@ -308,8 +308,12 @@ export default function DashboardPage() {
               <div className="gold-rule mx-auto mt-6" style={{ width: "60px" }} />
             </div>
 
-            {/* Layer tabs — editorial section nav */}
-            <div className="flex items-end justify-center gap-10 mb-12 flex-wrap" style={{ borderBottom: "1px solid #d8d0c4" }}>
+            {/* Layer tabs — editorial section nav. Grid keeps all four tabs
+                visible on every viewport instead of wrapping awkwardly. */}
+            <div
+              className="grid grid-cols-4 gap-2 sm:gap-6 md:gap-10 mb-10 md:mb-12"
+              style={{ borderBottom: "1px solid #d8d0c4" }}
+            >
               {LAYERS.map(({ key, label, desc }) => {
                 const active = activeLayer === key;
                 const count = report.sections[key as LayerKey]?.stories?.length ?? 0;
@@ -317,20 +321,20 @@ export default function DashboardPage() {
                   <button
                     key={key}
                     onClick={() => setActiveLayer(key as LayerKey)}
-                    className="pb-4 px-1 transition-colors text-center group"
+                    className="pb-3 md:pb-4 px-1 transition-colors text-center group"
                     style={{
                       borderBottom: active ? "2px solid #b8962e" : "2px solid transparent",
                       marginBottom: "-1px",
                     }}
                   >
                     <p
-                      className="text-[10px] tracking-[0.25em] uppercase mb-1.5"
+                      className="text-[9px] sm:text-[10px] tracking-[0.18em] sm:tracking-[0.25em] uppercase mb-1.5"
                       style={{ color: active ? "#b8962e" : "#787878", fontWeight: 600 }}
                     >
                       {key} · {label}
                     </p>
                     <p
-                      className="text-[28px] leading-none mb-1"
+                      className="text-[22px] sm:text-[28px] leading-none mb-1"
                       style={{
                         fontFamily: "'Rufina', Georgia, serif",
                         color: active ? "#0a0f1e" : "#3a3a3a",
@@ -339,7 +343,7 @@ export default function DashboardPage() {
                     >
                       {count}
                     </p>
-                    <p className="text-[10px]" style={{ color: "#a0a0a0" }}>
+                    <p className="text-[9px] sm:text-[10px]" style={{ color: "#a0a0a0" }}>
                       {desc}
                     </p>
                   </button>

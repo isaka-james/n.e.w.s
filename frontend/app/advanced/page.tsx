@@ -9,13 +9,14 @@ const STORAGE_KEY = "news_advanced_config";
 
 interface Config {
   temperature: number;
-  maxStories: number;
   useNewsdata: boolean;
   useNewsapi: boolean;
   useNewscatcher: boolean;
   useGnews: boolean;
   useGuardian: boolean;
   useNytimes: boolean;
+  // Per-layer story target — how many stories each layer aims to contain.
+  // Each layer is capped independently in Python so the writer can't drop one.
   minCity: number;
   minCountry: number;
   minContinent: number;
@@ -24,17 +25,16 @@ interface Config {
 
 const DEFAULTS: Config = {
   temperature: 0.7,
-  maxStories: 15,
   useNewsdata: true,
   useNewsapi: true,
   useNewscatcher: true,
   useGnews: true,
   useGuardian: true,
   useNytimes: true,
-  minCity: 10,
-  minCountry: 10,
-  minContinent: 10,
-  minWorld: 30,
+  minCity: 8,
+  minCountry: 8,
+  minContinent: 8,
+  minWorld: 12,
 };
 
 function loadConfig(): Config {
@@ -135,7 +135,6 @@ export default function AdvancedPage() {
         force: true,
         fresh: fromScratch,
         temperature: config.temperature,
-        maxStories: config.maxStories,
         useNewsdata: config.useNewsdata,
         useNewsapi: config.useNewsapi,
         useNewscatcher: config.useNewscatcher,
@@ -162,11 +161,11 @@ export default function AdvancedPage() {
 
       {/* Masthead */}
       <div style={{ borderBottom: "1px solid #d8d0c4", background: "#ffffff" }}>
-        <div className="max-w-3xl mx-auto px-12 py-10">
+        <div className="max-w-3xl mx-auto px-5 sm:px-8 md:px-12 py-8 md:py-10">
           <p className="text-[11px] tracking-[0.25em] uppercase mb-2" style={{ color: "#b8962e", fontWeight: 600 }}>
             Editorial Controls
           </p>
-          <h1 className="text-[40px] leading-none mb-3" style={{ fontFamily: "'Rufina', Georgia, serif", color: "#0a0f1e" }}>
+          <h1 className="text-[28px] sm:text-[34px] md:text-[40px] leading-none mb-3" style={{ fontFamily: "'Rufina', Georgia, serif", color: "#0a0f1e" }}>
             Advanced
           </h1>
           <p className="text-[14px] max-w-xl" style={{ color: "#787878" }}>
@@ -176,7 +175,7 @@ export default function AdvancedPage() {
         </div>
       </div>
 
-      <div className="max-w-3xl mx-auto px-12 py-12 space-y-12">
+      <div className="max-w-3xl mx-auto px-5 sm:px-8 md:px-12 py-8 md:py-12 space-y-10 md:space-y-12">
 
         {/* Regenerate */}
         <Section number="I" title="Regenerate report">
@@ -238,14 +237,10 @@ export default function AdvancedPage() {
               hint={["Precise", "Creative"]}
               onChange={(v) => update({ temperature: v })}
             />
-            <SliderField
-              label="Max stories in briefing"
-              value={config.maxStories}
-              min={3} max={25} step={1}
-              display={`${config.maxStories}`}
-              hint={["Tight", "Exhaustive"]}
-              onChange={(v) => update({ maxStories: Math.round(v) })}
-            />
+            <p className="text-[12px] italic leading-relaxed" style={{ color: "#787878" }}>
+              Story counts are now set per-layer below. The total number of stories
+              in your briefing is the sum of all four layers.
+            </p>
           </div>
         </Section>
 
@@ -296,43 +291,44 @@ export default function AdvancedPage() {
           )}
         </Section>
 
-        {/* Layer minimums */}
-        <Section number="IV" title="Layer minimums">
+        {/* Per-layer story targets */}
+        <Section number="IV" title="Stories per layer">
           <p className="text-[13px] mb-5" style={{ color: "#787878" }}>
-            Minimum stories required per layer before the briefing is written. The AI will lower its
-            score threshold to fill a layer if fewer stories are available.
+            How many stories each geographic layer aims to contain. Each layer is
+            capped independently — so the city tab can never accidentally come
+            back empty just because the world tab was full of news.
           </p>
           <div className="space-y-8 p-7" style={{ background: "#ffffff", border: "1px solid #d8d0c4" }}>
             <SliderField
-              label="City (N) minimum"
+              label="N · City stories"
               value={config.minCity}
-              min={3} max={30} step={1}
+              min={0} max={20} step={1}
               display={`${config.minCity}`}
-              hint={["Lean", "Dense"]}
+              hint={["None", "Many"]}
               onChange={(v) => update({ minCity: Math.round(v) })}
             />
             <SliderField
-              label="Country (E) minimum"
+              label="E · Country stories"
               value={config.minCountry}
-              min={3} max={30} step={1}
+              min={0} max={20} step={1}
               display={`${config.minCountry}`}
-              hint={["Lean", "Dense"]}
+              hint={["None", "Many"]}
               onChange={(v) => update({ minCountry: Math.round(v) })}
             />
             <SliderField
-              label="Continent (W) minimum"
+              label="W · Continent stories"
               value={config.minContinent}
-              min={3} max={30} step={1}
+              min={0} max={20} step={1}
               display={`${config.minContinent}`}
-              hint={["Lean", "Dense"]}
+              hint={["None", "Many"]}
               onChange={(v) => update({ minContinent: Math.round(v) })}
             />
             <SliderField
-              label="World (S) minimum"
+              label="S · World stories"
               value={config.minWorld}
-              min={5} max={60} step={5}
+              min={0} max={30} step={1}
               display={`${config.minWorld}`}
-              hint={["Focused", "Expansive"]}
+              hint={["None", "Many"]}
               onChange={(v) => update({ minWorld: Math.round(v) })}
             />
           </div>

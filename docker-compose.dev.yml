@@ -32,9 +32,8 @@ services:
     build: ./frontend
     restart: unless-stopped
     env_file: .env
-    environment:
-      NEXT_PUBLIC_API_URL: http://localhost:4291/api
-      NEXT_PUBLIC_APP_URL: http://localhost:4291
+    # No NEXT_PUBLIC_API_URL — the frontend uses a relative "/api" path so
+    # the same build serves both localhost and LAN hostnames seamlessly.
     volumes:
       - ./frontend:/app
       - /app/node_modules

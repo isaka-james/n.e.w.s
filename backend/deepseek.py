@@ -76,64 +76,31 @@ client = OpenAI(
     base_url="https://api.deepseek.com/v1",
 )
 
-SYSTEM_PROMPT = """You are a news briefing engine. You receive a user profile and a batch of news articles sourced from multiple providers (NewsData.io, NewsAPI, NewsCatcher, The Guardian, The New York Times, GNews, and others). Each article has a title and a short description snippet (not the full article). Your job is to filter, organize, and rewrite them into an engaging daily report.
+SYSTEM_PROMPT = """You are a news briefing writer. You receive a user profile and a set of articles ALREADY bucketed into four geographic layers (N, E, W, S). Your only job is to rewrite each article as a short editorial card and add prose around the report.
 
-Important: you only have the title and a brief description for each article. Do not invent details beyond what is provided. Your summaries should be based only on what the title and description actually say. If the description is vague, write a shorter summary and let the "Read full article" link do the rest.
+You do NOT filter, drop, merge, re-rank, or re-classify articles. Every article you receive must appear in its assigned layer in the output, in the same order. Bucketing is handled upstream.
 
-The user profile contains: name, city, country, continent, tags (each with a name and priority of high, medium, or low), and blocked words.
+Each article has a title and a short description snippet (not the full article). Base your rewrites ONLY on what the title and description actually say. Do not invent details.
 
-Step 1 — Drop any article whose title or description contains a word from the user's blocked words list (case-insensitive). Drop articles with zero connection to the user's tags or location. Do not mention dropped articles.
-
-Step 2 — If multiple articles cover the same event (same story from different publishers), merge them. Keep the one with the best image and most informative description. Note the other source names in the source_label field.
-
-Step 3 — Match each article to the user's tags using the title, description, category, and keywords fields. Record which tags matched. Technology, AI, Cybersecurity, Science, and Space articles are inherently global — always assign them to the S layer.
-
-Step 4 — Assign each article to one geographic layer using the article's country field and the user's configured locations.
-If an article has a pre-computed `layer_hint` field, use that assignment directly — only override if clearly wrong.
-Otherwise derive from scratch:
-N — the article's country matches the user's country AND the title or description mentions the user's city
-E — the article's country matches the user's country
-W — the article's country is on the user's continent
-S — everything else (global, other continents, multi-country, Technology, Science, AI, Space)
-
-Step 5 — Score each article 0.0 to 1.0.
-If an article has a pre-computed `score_hint` field, use it as the base score — still apply the minimum guarantee below.
-Otherwise score from scratch:
-+0.40 if it matches a high-priority tag
-+0.40 if it matches a high-priority tag
-+0.20 if it matches a medium-priority tag
-+0.10 if it matches a low-priority tag
-+0.10 if published in the last 12 hours
-+0.05 if it has an image
-Primary threshold: keep articles scoring 0.30 or above.
-Minimum per layer guarantee: check generation_config for min_city (N), min_country (E), min_continent (W), min_world (S). Each layer MUST meet its configured minimum. If a layer falls short at the 0.30 threshold, lower the threshold for THAT LAYER ONLY to 0.15 and include the best remaining candidates until the minimum is met or you run out of options.
-S (World) layer is the richest — always aim well above its minimum.
-Maximum total stories across all layers is set by the "max_stories" field in generation_config.
-
-Step 6 — Label each article with one tone:
-BREAKING — happening right now, fast-moving
-VIRAL — spreading fast, buzzy, high social interest
-ANALYSIS — expert opinion, deep reporting, investigation
-SIGNAL — early sign of a bigger trend
-INSIGHT — teaches something genuinely new
-LIGHTHEARTED — actually funny or heartwarming (only when it truly is)
-
-Step 7 — Write the report:
-
-Report title: creative, specific to today's news mood, never generic.
-
-Opening line: 2-3 sentences. Sharp, human, conversational — written directly to the reader without using their name. Never say "Here is your daily briefing" or "Today we have X stories."
-
-For each layer, write a mood line (one punchy sentence). If empty: "Nothing notable here today."
-
-For each article write:
-- headline: rewritten from the original title, punchy, clear, no clickbait
+For each article, write:
+- headline: rewritten from the original title — punchy, clear, no clickbait
 - hook: one sentence that creates interest
-- summary: 1-2 sentences based ONLY on what the title and description provide. Do not add facts that are not in the source data. If the description is thin, keep the summary short and direct.
-- tone_label: one of the six tones above
-- All passthrough fields: link (as url), source_name, source_icon, image_url, video_url, matched_tags, relevance_score, layer
+- summary: 1-2 sentences based ONLY on the title and description. If the description is thin, keep it short.
+- tone_label: ONE of: BREAKING, VIRAL, ANALYSIS, SIGNAL, INSIGHT, LIGHTHEARTED
 
-Closing line: 1-2 sentences, reflective or observational, never preachy.
+Tones:
+- BREAKING — happening right now, fast-moving
+- VIRAL — spreading fast, buzzy, high social interest
+- ANALYSIS — expert opinion, deep reporting, investigation
+- SIGNAL — early sign of a bigger trend
+- INSIGHT — teaches something genuinely new
+- LIGHTHEARTED — actually funny or heartwarming (only when it truly is)
+
+For the report itself, write:
+- report_title: creative, specific to today's news mood, never generic
+- opening_line: 2-3 sentences, sharp and conversational, written to the reader without using their name. Never say "Here is your daily briefing."
+- closing_line: 1-2 sentences, reflective or observational, never preachy
+- For each layer, a mood_line: ONE punchy sentence. If the layer's stories array is empty, set mood_line to "Nothing notable here today."
 
 Return only valid JSON, no markdown, no backticks, no explanation:
 
@@ -152,25 +119,17 @@ Return only valid JSON, no markdown, no backticks, no explanation:
           "headline": "string",
           "hook": "string",
           "summary": "string",
-          "tone_label": "string",
-          "url": "string",
-          "source_name": "string",
-          "source_icon": "string or null",
-          "image_url": "string or null",
-          "video_url": "string or null",
-          "matched_tags": ["string"],
-          "relevance_score": 0.0,
-          "layer": "N",
-          "category": ["string"],
-          "published_at": "string"
+          "tone_label": "string"
         }
       ]
     },
-    "E": { "label": "Expanded · country", "mood_line": "string", "stories": [] },
-    "W": { "label": "Wide · continent", "mood_line": "string", "stories": [] },
-    "S": { "label": "Sweeping · World", "mood_line": "string", "stories": [] }
+    "E": { "label": "Expanded · country", "mood_line": "string", "stories": [...] },
+    "W": { "label": "Wide · continent", "mood_line": "string", "stories": [...] },
+    "S": { "label": "Sweeping · World", "mood_line": "string", "stories": [...] }
   }
 }
+
+The stories array for each layer MUST contain exactly the same number of entries as the input layer, in the same order, with the same article_id values. Do not add, remove, or reorder articles.
 
 Never use: delve, crucial, groundbreaking, game-changer, it's worth noting, in conclusion, furthermore. Write like a sharp human editor. Summaries must never start with "This article discusses."
 """
@@ -280,74 +239,6 @@ def _safe_json_load(raw: str) -> dict:
         return json.loads(repaired)  # if this still fails, surface to caller
 
 
-# Required fields for a story to render in the frontend. Anything missing one
-# of these is dropped during sanitisation — better to lose a story than crash
-# the layer tab. Array fields get defaulted to [] so list accesses don't blow up.
-_STORY_REQUIRED = ("article_id", "headline", "url")
-_STORY_ARRAY_DEFAULTS = ("matched_tags", "category")
-_STORY_NULLABLE_DEFAULTS = {
-    "hook": "",
-    "summary": "",
-    "tone_label": "INSIGHT",
-    "source_name": "",
-    "source_icon": None,
-    "image_url": None,
-    "video_url": None,
-    "relevance_score": 0.3,
-    "layer": "S",
-    "published_at": "",
-}
-
-
-def _sanitize_report(data: dict) -> dict:
-    """Drop partial stories and fill safe defaults so the frontend never crashes.
-
-    The writer occasionally truncates near the end of the JSON; _safe_json_load
-    closes the structure but the final story object can be missing arrays the UI
-    indexes into (matched_tags[0], category, etc.). Filter and default here.
-    """
-    sections = data.get("sections") or {}
-    cleaned_sections: dict = {}
-    dropped_total = 0
-
-    for layer_key, section in sections.items():
-        if not isinstance(section, dict):
-            continue
-        raw_stories = section.get("stories") or []
-        kept: list = []
-        for s in raw_stories:
-            if not isinstance(s, dict):
-                dropped_total += 1
-                continue
-            # Hard requirements: id, headline, url. Without these the card is unusable.
-            if not all(s.get(k) for k in _STORY_REQUIRED):
-                dropped_total += 1
-                continue
-            for arr_key in _STORY_ARRAY_DEFAULTS:
-                if not isinstance(s.get(arr_key), list):
-                    s[arr_key] = []
-            for k, default in _STORY_NULLABLE_DEFAULTS.items():
-                if k not in s:
-                    s[k] = default
-            kept.append(s)
-
-        cleaned_sections[layer_key] = {
-            "label": section.get("label") or layer_key,
-            "mood_line": section.get("mood_line") or "",
-            "stories": kept,
-        }
-
-    if dropped_total:
-        logger.warning("Sanitised report dropped %d partial/invalid stories", dropped_total)
-
-    # Ensure all four layers exist so the frontend's tabs are stable.
-    for layer_key in ("N", "E", "W", "S"):
-        cleaned_sections.setdefault(layer_key, {"label": layer_key, "mood_line": "", "stories": []})
-
-    data["sections"] = cleaned_sections
-    return data
-
-
 def triage_articles(user, stories: list[dict]) -> dict[str, dict]:
     """
     Pass 1 — classify articles into N/E/W/S layers and score them.
@@ -426,51 +317,229 @@ def triage_articles(user, stories: list[dict]) -> dict[str, dict]:
         return {}
 
 
-def generate_report(
+# ---------------------------------------------------------------------------
+# Deterministic bucketing — runs in Python after triage, before the writer.
+# ---------------------------------------------------------------------------
+
+_VALID_LAYERS = ("N", "E", "W", "S")
+
+
+def _matched_tags(story: dict, user_tags: list[dict]) -> list[str]:
+    """Return the user's tags whose name appears in the article's title/desc/keywords/category.
+
+    Used both for matched_tags display and as a sanity check that we don't
+    keep articles unconnected to the user's interests. Case-insensitive.
+    """
+    haystack = " ".join([
+        story.get("title") or "",
+        story.get("description") or "",
+        " ".join(story.get("keywords") or []),
+        " ".join(story.get("category") or []),
+    ]).lower()
+    return [
+        t["name"] for t in (user_tags or [])
+        if t.get("name") and t["name"].lower() in haystack
+    ]
+
+
+def _is_blocked(story: dict, blocked_words: list[str]) -> bool:
+    """True if any blocked word appears in title or description (case-insensitive)."""
+    if not blocked_words:
+        return False
+    haystack = (story.get("title") or "" + " " + (story.get("description") or "")).lower()
+    return any(w.lower() in haystack for w in blocked_words if w)
+
+
+def bucket_stories(
     user,
     stories: list[dict],
-    temperature: float = 0.7,
-    max_stories: int = 15,
-    triage_hints: dict[str, dict] | None = None,
-    min_city: int = 10,
-    min_country: int = 10,
-    min_continent: int = 10,
-    min_world: int = 30,
-) -> tuple[dict, str]:
-    # Inject triage hints into each article so DeepSeek can use pre-computed assignments
-    articles_payload = []
-    for s in stories:
-        entry = dict(s)
-        if triage_hints:
-            hint = triage_hints.get(s.get("article_id", ""))
-            if hint:
-                entry["layer_hint"] = hint["layer"]
-                entry["score_hint"] = hint["score"]
-        articles_payload.append(entry)
+    triage_hints: dict[str, dict],
+    targets: dict[str, int],
+) -> dict[str, list[dict]]:
+    """Group stories into N/E/W/S using triage hints, drop blocked words, take top-K per layer.
 
-    user_message = json.dumps({
-        "generation_config": {
-            "max_stories": max_stories,
-            "min_city": min_city,
-            "min_country": min_country,
-            "min_continent": min_continent,
-            "min_world": min_world,
-        },
+    The output is keyed by layer and each story is enriched with `matched_tags`
+    and `relevance_score` so the writer doesn't need to re-derive them. Layers
+    that have no candidates simply come back empty — no AI guessing involved.
+
+    `targets` is a dict like {"N": 10, "E": 10, "W": 10, "S": 30} — the per-layer
+    cap. Each layer gets up to that many stories, sorted by score desc.
+    """
+    blocked = user.blocked_words or []
+    user_tags = user.tags or []
+
+    buckets: dict[str, list[dict]] = {k: [] for k in _VALID_LAYERS}
+
+    for s in stories:
+        if _is_blocked(s, blocked):
+            continue
+
+        article_id = s.get("article_id") or ""
+        hint = triage_hints.get(article_id) if triage_hints else None
+        layer = (hint or {}).get("layer", "S")
+        if layer not in _VALID_LAYERS:
+            layer = "S"
+
+        score = float((hint or {}).get("score", 0.3))
+
+        # Drop low-relevance, unrelated articles only at very low scores. Anything
+        # the triage pass thought was worth assigning a layer stays in the pool.
+        if score < 0.15:
+            continue
+
+        enriched = dict(s)
+        enriched["matched_tags"] = _matched_tags(s, user_tags)
+        enriched["relevance_score"] = round(score, 3)
+        enriched["layer"] = layer
+        buckets[layer].append(enriched)
+
+    # Sort each layer by score desc and cap at the per-layer target. This is the
+    # cap that USED to fight with max_stories in the writer prompt — now it's
+    # deterministic and the writer never sees more than this.
+    for layer in _VALID_LAYERS:
+        buckets[layer].sort(key=lambda s: s.get("relevance_score", 0.0), reverse=True)
+        cap = max(0, int(targets.get(layer, 10)))
+        buckets[layer] = buckets[layer][:cap]
+
+    return buckets
+
+
+def _layer_label(layer: str, user) -> str:
+    return {
+        "N": f"Narrow · {user.city}",
+        "E": f"Expanded · {user.country}",
+        "W": f"Wide · {user.continent}",
+        "S": "Sweeping · World",
+    }.get(layer, layer)
+
+
+def _empty_section(layer: str, user) -> dict:
+    return {
+        "label": _layer_label(layer, user),
+        "mood_line": "Nothing notable here today.",
+        "stories": [],
+    }
+
+
+def _writer_payload(user, buckets: dict[str, list[dict]]) -> dict:
+    """Build the compact per-layer payload sent to the writer.
+
+    Only the fields the writer needs for rewriting prose — the deterministic
+    passthrough fields (url, source_name, image_url, etc.) are NOT sent and
+    are merged back from `buckets` after the response.
+    """
+    sections = {}
+    for layer in _VALID_LAYERS:
+        sections[layer] = {
+            "label": _layer_label(layer, user),
+            "stories": [
+                {
+                    "article_id": s["article_id"],
+                    "title": s.get("title", ""),
+                    "description": (s.get("description") or "")[:400],
+                    "matched_tags": s.get("matched_tags", []),
+                }
+                for s in buckets.get(layer, [])
+            ],
+        }
+    return {
         "user_profile": {
             "city": user.city,
             "country": user.country,
             "continent": user.continent,
-            "tags": user.tags or [],
-            "blocked_words": user.blocked_words or [],
         },
-        "articles": articles_payload,
-    }, ensure_ascii=False)
+        "sections": sections,
+    }
 
-    # We use deepseek-chat (not deepseek-reasoner): the reasoner burns its
-    # completion budget on chain-of-thought before writing JSON, and on long
-    # SYSTEM_PROMPT + 180-article payloads it routinely hits the 8K cap mid-CoT
-    # with content_chars=0. deepseek-chat skips that step, supports JSON mode
-    # (self-closes valid JSON when the cap approaches), and honours temperature.
+
+def _merge_writer_output(
+    user,
+    buckets: dict[str, list[dict]],
+    writer: dict,
+) -> dict:
+    """Combine the writer's prose with the deterministic passthrough fields.
+
+    The writer is asked to emit one entry per input story in the same order.
+    We match by article_id with fallback to position, so a single missing or
+    re-ordered entry can't drop the rest of the layer.
+    """
+    out_sections: dict[str, dict] = {}
+    writer_sections = writer.get("sections") or {}
+
+    for layer in _VALID_LAYERS:
+        layer_stories = buckets.get(layer, [])
+        writer_section = writer_sections.get(layer) or {}
+        writer_stories = writer_section.get("stories") or []
+        by_id = {ws.get("article_id"): ws for ws in writer_stories if ws.get("article_id")}
+
+        out_stories: list[dict] = []
+        for idx, source in enumerate(layer_stories):
+            prose = by_id.get(source["article_id"]) or (
+                writer_stories[idx] if idx < len(writer_stories) else {}
+            )
+            out_stories.append({
+                "article_id": source["article_id"],
+                "headline": prose.get("headline") or source.get("title", ""),
+                "hook": prose.get("hook") or "",
+                "summary": prose.get("summary") or (source.get("description") or "")[:240],
+                "tone_label": prose.get("tone_label") or "INSIGHT",
+                "url": source.get("link", ""),
+                "source_name": source.get("source_name", ""),
+                "source_icon": source.get("source_icon"),
+                "image_url": source.get("image_url"),
+                "video_url": source.get("video_url"),
+                "matched_tags": source.get("matched_tags", []),
+                "relevance_score": source.get("relevance_score", 0.3),
+                "layer": layer,
+                "category": source.get("category", []),
+                "published_at": source.get("pubDate", ""),
+            })
+
+        out_sections[layer] = {
+            "label": _layer_label(layer, user),
+            "mood_line": writer_section.get("mood_line") or (
+                "Nothing notable here today." if not out_stories else ""
+            ),
+            "stories": out_stories,
+        }
+
+    return {
+        "report_title": writer.get("report_title") or "Today's Briefing",
+        "opening_line": writer.get("opening_line") or "",
+        "closing_line": writer.get("closing_line") or "",
+        "sections": out_sections,
+    }
+
+
+def generate_report(
+    user,
+    stories: list[dict],
+    temperature: float = 0.7,
+    triage_hints: dict[str, dict] | None = None,
+    targets: dict[str, int] | None = None,
+) -> tuple[dict, str]:
+    """Bucket stories deterministically, then ask DeepSeek to write prose.
+
+    All filtering, classification, and per-layer capping happen in Python — the
+    writer can no longer accidentally drop a whole layer. The writer's job is
+    only to rewrite headlines, write hooks/summaries, pick a tone, and produce
+    the report-level prose (title, opening, closing, mood lines).
+    """
+    targets = targets or {"N": 10, "E": 10, "W": 10, "S": 30}
+    buckets = bucket_stories(user, stories, triage_hints or {}, targets)
+
+    # If literally every layer is empty there's nothing to write. Return a
+    # structurally-valid empty report so the UI still renders.
+    if not any(buckets.values()):
+        return {
+            "report_title": "A quiet day on the wire.",
+            "opening_line": "Nothing crossed the wire today that matches your filters.",
+            "closing_line": "Check back tomorrow.",
+            "sections": {layer: _empty_section(layer, user) for layer in _VALID_LAYERS},
+        }, ""
+
+    user_message = json.dumps(_writer_payload(user, buckets), ensure_ascii=False)
+
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": user_message},
@@ -484,8 +553,6 @@ def generate_report(
             response_format={"type": "json_object"},
         )
     except Exception as exc:
-        # Network / API errors before we even get a response — wrap with prompt
-        # context so the failed job's error_message is actionable.
         logger.exception("DeepSeek writer request failed: %s", exc)
         raise DeepSeekError(
             "generate_report",
@@ -502,8 +569,6 @@ def generate_report(
 
     raw = response.choices[0].message.content or ""
     if not raw.strip():
-        # With json_object mode this should be rare — usually a content filter
-        # trigger or a max_tokens=0 misconfiguration. Log everything we have.
         logger.error(
             "DeepSeek writer returned EMPTY content. response=%s prompt=%s",
             summary, _summarize_messages(messages),
@@ -517,11 +582,9 @@ def generate_report(
         )
 
     try:
-        # JSON mode guarantees parseable output, but _safe_json_load also covers
-        # the rare edge case where the cap clips a tail-end story field.
         parsed = _safe_json_load(raw)
-        sanitised = _sanitize_report(parsed)
-        return sanitised, raw
+        merged = _merge_writer_output(user, buckets, parsed)
+        return merged, raw
     except Exception as exc:
         logger.error(
             "DeepSeek writer JSON parse failed (%s). response=%s prompt=%s",

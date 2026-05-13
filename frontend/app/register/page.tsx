@@ -112,10 +112,10 @@ export default function RegisterPage() {
 
       {/* Masthead */}
       <div style={{ background: "#0a0f1e" }}>
-        <div className="max-w-3xl mx-auto px-12 py-10">
+        <div className="max-w-3xl mx-auto px-5 sm:px-8 md:px-12 py-8 md:py-10">
           <Link href="/login" className="inline-block">
             <h1
-              className="text-[34px] leading-none"
+              className="text-[28px] sm:text-[34px] leading-none"
               style={{ fontFamily: "'Rufina', Georgia, serif", color: "#ffffff", letterSpacing: "0.04em" }}
             >
               N.E.W.S.
@@ -127,13 +127,13 @@ export default function RegisterPage() {
         </div>
       </div>
 
-      <div className="max-w-3xl mx-auto px-12 py-12">
-        <div className="text-center mb-12">
+      <div className="max-w-3xl mx-auto px-5 sm:px-8 md:px-12 py-8 md:py-12">
+        <div className="text-center mb-10 md:mb-12">
           <p className="text-[10px] tracking-[0.3em] uppercase mb-3" style={{ color: "#b8962e", fontWeight: 600 }}>
             Subscription
           </p>
           <h2
-            className="text-[38px] leading-tight mb-3"
+            className="text-[26px] sm:text-[32px] md:text-[38px] leading-tight mb-3"
             style={{ fontFamily: "'Rufina', Georgia, serif", color: "#0a0f1e" }}
           >
             Set up your personal briefing.

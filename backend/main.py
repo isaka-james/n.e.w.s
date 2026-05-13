@@ -110,10 +110,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="N.E.W.S. API", version="1.0.0", lifespan=lifespan)
 
+# The frontend talks to the API via a relative "/api" path through nginx, so
+# same-origin requests already work without CORS. We still allow any origin
+# here so LAN devices and curl-style debugging work cleanly. We use
+# allow_origin_regex with credentials=False so the wildcard plays nicely with
+# the bearer-token auth header.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:4291"],
-    allow_credentials=True,
+    allow_origin_regex=".*",
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

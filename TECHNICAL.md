@@ -13,10 +13,11 @@
 ## Briefing pipeline
 
 1. **Fetch** — all sources in parallel. Articles older than 3 days dropped at the API level where supported, otherwise post-fetch.
-2. **Triage** — DeepSeek assigns each article a compass layer (N/E/W/S) and a 0-1 relevance score.
-3. **Boost** — thin layers trigger a targeted re-fetch from Guardian and NYTimes.
-4. **Write** — DeepSeek reasoner writes the briefing.
-5. **Cache** — stored in PostgreSQL. Re-run with cached articles (AI only) or fresh fetch (From scratch).
+2. **Triage** — DeepSeek assigns each article a compass layer (N/E/W/S) and a 0–1 relevance score.
+3. **Boost** — if the city (N) or country (E) layer is empty, a single targeted re-fetch from Guardian and NYTimes runs.
+4. **Bucket (Python)** — articles are grouped into N/E/W/S buckets, blocked-word matches dropped, each bucket sorted by score, and capped at the user's per-layer target. The writer never sees more than this — so no layer can be accidentally emptied.
+5. **Write** — DeepSeek rewrites each pre-bucketed article (headline, hook, summary, tone) and adds the report-level prose. It does not filter, classify, or re-rank.
+6. **Cache** — stored in PostgreSQL. Re-run with cached articles (AI only) or fresh fetch (From scratch).
 
 ## Compass layers
 

@@ -45,6 +45,22 @@ docker compose up -d --build
 
 Open http://localhost:4291, register, and press **Generate today's report**.
 
+## Use it from other devices on the same network
+
+The frontend is built to use a relative API path, so any device on the same
+WiFi can use the app — phones, tablets, other laptops.
+
+1. Find your host's LAN IP (Linux/Mac: `ip addr` or `hostname -I` · Windows: `ipconfig`).
+2. From another device on the same WiFi, open `http://<your-ip>:4291`
+   (for example `http://192.168.1.5:4291`).
+
+If your machine has a firewall (UFW, Windows Defender, macOS firewall), allow
+inbound TCP on port `4291`. Example for UFW:
+
+```bash
+sudo ufw allow 4291/tcp
+```
+
 ## Stop
 
 ```bash

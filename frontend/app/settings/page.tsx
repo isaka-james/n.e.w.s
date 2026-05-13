@@ -171,19 +171,19 @@ export default function SettingsPage() {
 
       {/* Masthead */}
       <div style={{ borderBottom: "1px solid #d8d0c4", background: "#ffffff" }}>
-        <div className="max-w-3xl mx-auto px-12 py-10 flex items-end justify-between gap-6 flex-wrap">
+        <div className="max-w-3xl mx-auto px-5 sm:px-8 md:px-12 py-8 md:py-10 flex items-end justify-between gap-4 flex-wrap">
           <div>
             <p className="text-[11px] tracking-[0.25em] uppercase mb-2" style={{ color: "#b8962e", fontWeight: 600 }}>
               Profile · Preferences
             </p>
-            <h1 className="text-[40px] leading-none" style={{ fontFamily: "'Rufina', Georgia, serif", color: "#0a0f1e" }}>
+            <h1 className="text-[28px] sm:text-[34px] md:text-[40px] leading-none" style={{ fontFamily: "'Rufina', Georgia, serif", color: "#0a0f1e" }}>
               Settings
             </h1>
           </div>
           <button
             onClick={handleSave}
             disabled={saving || !dirty}
-            className="flex items-center gap-2 px-6 py-3 text-[11px] tracking-[0.22em] uppercase font-semibold transition-opacity disabled:opacity-40"
+            className="flex items-center gap-2 px-5 sm:px-6 py-3 text-[11px] tracking-[0.22em] uppercase font-semibold transition-opacity disabled:opacity-40"
             style={{ background: "#0a0f1e", color: "#ffffff" }}
           >
             {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
@@ -192,7 +192,7 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      <div className="max-w-3xl mx-auto px-12 py-12 space-y-12">
+      <div className="max-w-3xl mx-auto px-5 sm:px-8 md:px-12 py-8 md:py-12 space-y-10 md:space-y-12">
 
         {/* Account */}
         <Section number="I" title="Account">

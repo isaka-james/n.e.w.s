@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LogOut } from "lucide-react";
+import { LogOut, Menu, X } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useNotifications } from "@/lib/notifications-context";
 import { NotificationPanel } from "@/components/notification-panel";
@@ -20,20 +20,85 @@ export function Sidebar() {
   const { user, logout } = useAuth();
   const { unread } = useNotifications();
   const [panelOpen, setPanelOpen] = useState(false);
+  // Mobile drawer state — the sidebar is hidden by default below the md breakpoint
+  // and slides in as an overlay when the hamburger is tapped.
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   const handleLogout = () => {
     logout();
     router.push("/login");
   };
 
+  const closeDrawer = () => setDrawerOpen(false);
+
   return (
     <>
+      {/* Mobile top bar — only visible on small screens */}
+      <header
+        className="md:hidden fixed top-0 left-0 right-0 z-30 flex items-center justify-between px-5 py-3"
+        style={{ background: "#0a0f1e", borderBottom: "1px solid #1e2d4a" }}
+      >
+        <button
+          onClick={() => setDrawerOpen(true)}
+          className="p-1.5"
+          style={{ color: "#e2e8f0" }}
+          aria-label="Open navigation"
+        >
+          <Menu size={18} strokeWidth={1.8} />
+        </button>
+        <Link href="/dashboard" className="flex items-center gap-2">
+          <span
+            className="text-[18px] leading-none"
+            style={{
+              fontFamily: "'Rufina', Georgia, serif",
+              color: "#ffffff",
+              letterSpacing: "0.04em",
+            }}
+          >
+            N.E.W.S.
+          </span>
+        </Link>
+        <button
+          onClick={() => setPanelOpen(true)}
+          className="text-[10px] tracking-[0.18em] uppercase font-semibold"
+          style={{ color: unread > 0 ? "#b8962e" : "#8b9cb8" }}
+          aria-label="Activity"
+        >
+          {unread > 0 ? `Activity · ${unread}` : "Activity"}
+        </button>
+      </header>
+
+      {/* Mobile drawer backdrop */}
+      {drawerOpen && (
+        <div
+          className="md:hidden fixed inset-0 z-40"
+          style={{ background: "rgba(10, 15, 30, 0.5)" }}
+          onClick={closeDrawer}
+          aria-hidden
+        />
+      )}
+
+      {/* Sidebar — fixed/drawer on mobile, static on desktop */}
       <aside
-        className="editorial-pattern-dark sticky top-0 h-screen w-64 flex flex-col flex-shrink-0 overflow-y-auto"
+        className={`editorial-pattern-dark flex flex-col flex-shrink-0 overflow-y-auto
+          fixed md:sticky md:top-0 left-0 top-0 h-screen w-64 z-50
+          transition-transform duration-300
+          ${drawerOpen ? "translate-x-0" : "-translate-x-full"}
+          md:translate-x-0`}
         style={{ borderRight: "1px solid #1e2d4a" }}
       >
+        {/* Drawer close — visible only on mobile */}
+        <button
+          onClick={closeDrawer}
+          className="md:hidden absolute top-4 right-4 p-1.5"
+          style={{ color: "#8b9cb8" }}
+          aria-label="Close navigation"
+        >
+          <X size={16} strokeWidth={1.8} />
+        </button>
+
         {/* Wordmark */}
-        <Link href="/dashboard" className="block px-7 pt-9 pb-6">
+        <Link href="/dashboard" onClick={closeDrawer} className="block px-7 pt-9 pb-6">
           <h1
             className="text-[26px] leading-none mb-2"
             style={{
@@ -70,6 +135,7 @@ export function Sidebar() {
                 <Link
                   key={href}
                   href={href}
+                  onClick={closeDrawer}
                   className="block py-2 text-[16px] transition-colors relative"
                   style={{
                     fontFamily: "'Rufina', Georgia, serif",
@@ -106,7 +172,7 @@ export function Sidebar() {
           </p>
 
           <button
-            onClick={() => setPanelOpen(true)}
+            onClick={() => { setPanelOpen(true); closeDrawer(); }}
             className="w-full flex items-center justify-between py-2 transition-colors group"
             style={{ color: unread > 0 ? "#ffffff" : "#8b9cb8" }}
           >

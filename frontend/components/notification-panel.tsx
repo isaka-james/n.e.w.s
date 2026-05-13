@@ -82,9 +82,8 @@ export function NotificationPanel({ open, onClose }: Props) {
 
       <div
         ref={panelRef}
-        className="fixed top-0 right-0 h-full z-50 flex flex-col transition-transform duration-300"
+        className="fixed top-0 right-0 h-full z-50 flex flex-col transition-transform duration-300 w-full sm:w-[380px] max-w-full"
         style={{
-          width: "380px",
           background: "#0a0f1e",
           borderLeft: "1px solid #1e2d4a",
           transform: open ? "translateX(0)" : "translateX(100%)",
