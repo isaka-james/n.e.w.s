@@ -49,11 +49,11 @@ export function StoryCard({ story, featured = false }: Props) {
         )}
       </div>
 
-      {/* Text block */}
-      <div style={{ padding: featured ? "32px" : "24px 24px 28px" }}>
+      {/* Text block — tighter padding on mobile, full on desktop */}
+      <div className={featured ? "p-5 sm:p-7 md:p-8" : "p-5 sm:p-6 pb-7"}>
 
         {/* Category line: tone + source */}
-        <div className="flex items-center gap-2 mb-4" style={{ minHeight: "12px" }}>
+        <div className="flex items-center gap-2 mb-3 sm:mb-4 flex-wrap" style={{ minHeight: "12px" }}>
           <span className={`tone-label tone-${story.tone_label}`}>
             {story.tone_label}
           </span>
@@ -68,12 +68,17 @@ export function StoryCard({ story, featured = false }: Props) {
 
         {/* Headline — Rufina display */}
         <h3
-          className={featured ? "text-[34px] leading-[1.15]" : "text-[20px] leading-[1.25]"}
+          className={
+            featured
+              ? "text-[22px] sm:text-[28px] md:text-[34px] leading-[1.15]"
+              : "text-[18px] sm:text-[20px] leading-[1.25]"
+          }
           style={{
             fontFamily: "'Rufina', Georgia, serif",
             color: "#0a0f1e",
             fontWeight: 400,
             letterSpacing: "-0.005em",
+            wordBreak: "break-word",
           }}
         >
           {story.headline}
@@ -82,7 +87,7 @@ export function StoryCard({ story, featured = false }: Props) {
         {/* Hook — only on featured cards */}
         {featured && story.hook && (
           <p
-            className="mt-4 text-[15px] leading-relaxed italic"
+            className="mt-3 sm:mt-4 text-[14px] sm:text-[15px] leading-relaxed italic"
             style={{ color: "#3a3a3a", fontFamily: "'Rufina', Georgia, serif" }}
           >
             {story.hook}
@@ -90,7 +95,7 @@ export function StoryCard({ story, featured = false }: Props) {
         )}
 
         {/* Footer meta */}
-        <div className="flex items-center gap-3 mt-5 pt-4" style={{ borderTop: "1px solid #ede8df" }}>
+        <div className="flex items-center gap-3 mt-4 sm:mt-5 pt-4 flex-wrap" style={{ borderTop: "1px solid #ede8df" }}>
           {firstTag && (
             <span className="text-[10px] tracking-[0.18em] uppercase" style={{ color: "#b8962e", fontWeight: 600 }}>
               {firstTag}
@@ -105,8 +110,9 @@ export function StoryCard({ story, featured = false }: Props) {
             </span>
           )}
           <span className="flex-1" />
+          {/* Always visible on touch devices (hover never fires there). */}
           <span
-            className="text-[10px] tracking-[0.18em] uppercase opacity-0 group-hover:opacity-100 transition-opacity"
+            className="text-[10px] tracking-[0.18em] uppercase md:opacity-0 md:group-hover:opacity-100 transition-opacity"
             style={{ color: "#b8962e", fontWeight: 600 }}
           >
             Read →

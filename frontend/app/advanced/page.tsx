@@ -52,7 +52,7 @@ function saveConfig(cfg: Config) {
 type RunningOp = "ai-only" | "from-scratch" | null;
 
 export default function AdvancedPage() {
-  const { start, finish } = useNotifications();
+  const { start, finish, update: updateTask } = useNotifications();
   const [config, setConfig] = useState<Config>(DEFAULTS);
   const [running, setRunning] = useState<RunningOp>(null);
   // Task-id for the active notification so we can resolve it when done
@@ -69,10 +69,13 @@ export default function AdvancedPage() {
       const op = job.type as RunningOp;
       setRunning(op);
       const title = op === "ai-only" ? "Re-run AI Only" : "Regenerate from Scratch";
-      taskIdRef.current = start(
+      const taskId = start(
         `${title} In Progress`,
         "This operation was in progress when you left. Picking up where you left off…"
       );
+      taskIdRef.current = taskId;
+      // Restore actual backend progress so the Activity panel isn't stuck at 0%.
+      updateTask(taskId, { progress: job.progress ?? 0, stage: job.stage ?? "queued" });
     }).catch(() => { /* ignore */ });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -84,7 +87,18 @@ export default function AdvancedPage() {
     const poll = async () => {
       try {
         const job = await api.reports.status();
-        if (!job || job.status === "running") return;
+        if (!job) return;
+
+        if (job.status === "running") {
+          // Mirror live backend progress into the Activity panel.
+          if (taskIdRef.current) {
+            updateTask(taskIdRef.current, {
+              progress: job.progress ?? 0,
+              stage: job.stage ?? "queued",
+            });
+          }
+          return;
+        }
 
         setRunning(null);
 
@@ -107,7 +121,7 @@ export default function AdvancedPage() {
 
     const id = setInterval(poll, 5000);
     return () => clearInterval(id);
-  }, [running, finish]);
+  }, [running, finish, updateTask]);
 
   const update = (patch: Partial<Config>) => {
     const next = { ...config, ...patch };
@@ -183,7 +197,7 @@ export default function AdvancedPage() {
             <button
               onClick={() => handleRegenerate(false)}
               disabled={running !== null || noSources}
-              className="text-left p-7 transition-colors disabled:opacity-50"
+              className="text-left p-5 sm:p-6 md:p-7 transition-colors disabled:opacity-50"
               style={{ background: "#ffffff", borderRight: "1px solid #d8d0c4" }}
             >
               <div className="flex items-center gap-2 mb-3">
@@ -205,7 +219,7 @@ export default function AdvancedPage() {
             <button
               onClick={() => handleRegenerate(true)}
               disabled={running !== null || noSources}
-              className="text-left p-7 transition-colors disabled:opacity-50"
+              className="text-left p-5 sm:p-6 md:p-7 transition-colors disabled:opacity-50"
               style={{ background: "#ffffff" }}
             >
               <div className="flex items-center gap-2 mb-3">
@@ -228,7 +242,7 @@ export default function AdvancedPage() {
 
         {/* AI settings */}
         <Section number="II" title="Briefing engine">
-          <div className="space-y-8 p-7" style={{ background: "#ffffff", border: "1px solid #d8d0c4" }}>
+          <div className="space-y-8 p-5 sm:p-6 md:p-7" style={{ background: "#ffffff", border: "1px solid #d8d0c4" }}>
             <SliderField
               label="Temperature"
               value={config.temperature}
@@ -298,7 +312,7 @@ export default function AdvancedPage() {
             capped independently — so the city tab can never accidentally come
             back empty just because the world tab was full of news.
           </p>
-          <div className="space-y-8 p-7" style={{ background: "#ffffff", border: "1px solid #d8d0c4" }}>
+          <div className="space-y-8 p-5 sm:p-6 md:p-7" style={{ background: "#ffffff", border: "1px solid #d8d0c4" }}>
             <SliderField
               label="N · City stories"
               value={config.minCity}

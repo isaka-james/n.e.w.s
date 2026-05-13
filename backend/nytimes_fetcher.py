@@ -61,7 +61,7 @@ def _article_id(url: str) -> str:
     return "nyt_" + hashlib.md5(url.encode()).hexdigest()
 
 
-def _normalize_top_story(item: dict) -> dict | None:
+def _normalize_top_story(item: dict, fetch_target: str | None = None) -> dict | None:
     title = (item.get("title") or "").strip()
     description = (item.get("abstract") or "").strip()
     if not title:
@@ -101,13 +101,14 @@ def _normalize_top_story(item: dict) -> dict | None:
         "source_icon": None,
         "country": None,
         "category": [section] if section else [],
+        "fetch_target": fetch_target or "global",
         "keywords": [],
         "pubDate": item.get("published_date") or "",
         "language": "en",
     }
 
 
-def _normalize_article_search(doc: dict, country: str | None = None) -> dict | None:
+def _normalize_article_search(doc: dict, country: str | None = None, fetch_target: str | None = None) -> dict | None:
     # headline is a dict {"main": "..."} in article search API
     # guard against it being a plain string in case the API varies
     headline_raw = doc.get("headline")
@@ -153,6 +154,7 @@ def _normalize_article_search(doc: dict, country: str | None = None) -> dict | N
         "source_icon": None,
         "country": country,
         "category": [section] if section else [],
+        "fetch_target": fetch_target or "global",
         "keywords": [],
         "pubDate": doc.get("pub_date") or "",
         "language": "en",
@@ -203,7 +205,7 @@ def _fetch_most_popular() -> list[dict]:
         return []
 
 
-def _fetch_article_search(q: str, page_size: int = 10, country: str | None = None) -> list[dict]:
+def _fetch_article_search(q: str, page_size: int = 10, country: str | None = None, fetch_target: str | None = None) -> list[dict]:
     if not settings.NYTIMES_API_KEY:
         return []
     cutoff = (date.today() - timedelta(days=2)).strftime("%Y%m%d")
@@ -223,7 +225,7 @@ def _fetch_article_search(q: str, page_size: int = 10, country: str | None = Non
         docs = (data.get("response") or {}).get("docs") or []
         out = []
         for doc in docs[:page_size]:
-            n = _normalize_article_search(doc, country=country)
+            n = _normalize_article_search(doc, country=country, fetch_target=fetch_target)
             if n:
                 out.append(n)
         return out
@@ -234,21 +236,18 @@ def _fetch_article_search(q: str, page_size: int = 10, country: str | None = Non
 
 def fetch_nytimes_stories(user) -> list[dict]:
     """
-    Fetch from New York Times. Budget: ~15 calls per generation (4,000 req/day).
+    Fetch from New York Times. Budget: ~26 calls per generation (4,000 req/day).
 
-    Allocation:
-      1 call  — S: world top stories (global)
-      1 call  — S: technology top stories
-      1 call  — S: science top stories
-      1 call  — S: health top stories
-      1 call  — S: business top stories
-      1 call  — S: politics top stories
-      1 call  — S: us section (US national, relevant for country E layer)
-      1 call  — S: most popular (viral/trending)
-      1 call  — N: article search for user's city
-      1 call  — E: article search for user's country
-      1 call  — W: article search for user's continent keyword
-      up to 4 — S: high+medium priority tag sections (deduped)
+    Allocation (intentionally generous — NYT has plenty of daily headroom):
+      9 calls  — S: world, technology, science, health, business, politics,
+                    arts, food, travel top stories
+      1 call   — S: us section
+      1 call   — S: most popular (viral/trending)
+      3 calls  — N: city exact + city in headline + city general (article search)
+      2 calls  — E: country + country news (article search)
+      1 call   — W: continent keyword (article search)
+      up to 10 — S: high+medium priority tag sections (deduped) or direct
+                    keyword search for topics already covered by a core section
     """
     if not settings.NYTIMES_API_KEY:
         return []
@@ -256,26 +255,30 @@ def fetch_nytimes_stories(user) -> list[dict]:
     all_raw: list[dict] = []
     used_sections: set[str] = set()
 
-    # --- S layer: core always-on sections ---
-    core_sections = ["world", "technology", "science", "health", "business", "politics"]
+    # --- S layer: core always-on sections (9 calls) ---
+    core_sections = [
+        "world", "technology", "science", "health", "business",
+        "politics", "arts", "food", "travel",
+    ]
     for section in core_sections:
         all_raw += _fetch_top_stories(section)
         used_sections.add(section)
 
-    # --- E layer: US national section (strong for US-based users, good baseline otherwise) ---
+    # --- S layer: US national + most-popular ---
     all_raw += _fetch_top_stories("us")
     used_sections.add("us")
-
-    # --- S layer: most popular (viral / widely-read) ---
     all_raw += _fetch_most_popular()
 
-    # --- N layer: city-specific article search ---
+    # --- N layer: city-specific searches (3 angles) ---
     if user.city:
-        all_raw += _fetch_article_search(user.city, page_size=10, country=user.country)
+        all_raw += _fetch_article_search(f'"{user.city}"', page_size=10, country=user.country, fetch_target="local")
+        all_raw += _fetch_article_search(user.city, page_size=10, country=user.country, fetch_target="local")
+        all_raw += _fetch_article_search(f"{user.city} news", page_size=10, country=user.country, fetch_target="local")
 
-    # --- E layer: country article search ---
+    # --- E layer: country searches (2 angles) ---
     if user.country:
-        all_raw += _fetch_article_search(user.country, page_size=10, country=user.country)
+        all_raw += _fetch_article_search(user.country, page_size=15, country=user.country, fetch_target="national")
+        all_raw += _fetch_article_search(f"{user.country} news", page_size=10, country=user.country, fetch_target="national")
 
     # --- W layer: continent keyword search ---
     continent_keywords: dict[str, str] = {
@@ -290,16 +293,17 @@ def fetch_nytimes_stories(user) -> list[dict]:
     }
     cont_kw = continent_keywords.get(user.continent)
     if cont_kw:
-        all_raw += _fetch_article_search(cont_kw, page_size=10)
+        all_raw += _fetch_article_search(cont_kw, page_size=15, fetch_target="regional")
 
-    # --- S layer: up to 4 tag sections (high priority first, then medium) ---
+    # --- S layer: up to 10 tag sections (high priority first, then medium) ---
     all_tags = (
         [t for t in (user.tags or []) if t.get("priority") == "high"] +
         [t for t in (user.tags or []) if t.get("priority") == "medium"]
     )
     tag_calls = 0
+    section_kw_done: set[str] = set()
     for tag in all_tags:
-        if tag_calls >= 4:
+        if tag_calls >= 10:
             break
         name = tag.get("name", "")
         section = TAG_TO_NYT_SECTION.get(name)
@@ -307,8 +311,15 @@ def fetch_nytimes_stories(user) -> list[dict]:
             all_raw += _fetch_top_stories(section)
             used_sections.add(section)
             tag_calls += 1
-        elif not section:
-            all_raw += _fetch_article_search(name, page_size=10)
+        elif section:
+            # Section already covered — keyword search ensures the specific
+            # topic still surfaces directly in the article pool.
+            if name not in section_kw_done:
+                all_raw += _fetch_article_search(name, page_size=10)
+                section_kw_done.add(name)
+                tag_calls += 1
+        else:
+            all_raw += _fetch_article_search(name, page_size=15)
             tag_calls += 1
 
     return all_raw

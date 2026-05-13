@@ -8,7 +8,7 @@ from database import engine, get_session
 from models import User, CachedStories, Report, GenerationJob
 from auth import get_current_user
 from fetcher import fetch_stories, fetch_local_boost
-from deepseek import generate_report, triage_articles, DeepSeekError
+from deepseek import generate_report, DeepSeekError
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 logger = logging.getLogger(__name__)
@@ -90,9 +90,12 @@ def _run_generation(
                 session.commit()
                 return
 
-            if existing_report:
-                session.delete(existing_report)
-                session.commit()
+            # Keep the existing report object alive in this session — we will
+            # UPDATE it in-place at the end of the pipeline rather than
+            # delete-then-insert. This ensures the user's previous report stays
+            # readable in /reports/today if anything fails midway (AI error,
+            # network drop, DB write failure). The update is committed atomically
+            # with the job status change at the very end.
 
             cached = session.exec(
                 select(CachedStories).where(
@@ -107,20 +110,17 @@ def _run_generation(
                 cached = None
 
             if cached:
-                # Cached-story path: skip fetching entirely, just retriage + write.
-                _set_progress(job_id, "reading_cache", 30)
+                # Cached-story path: skip fetching, go straight to triage+write.
+                _set_progress(job_id, "reading_cache", 40)
                 stories = cached.stories
-                _set_progress(job_id, "triaging", 50)
-                triage = triage_articles(user, stories)
-                _set_progress(job_id, "writing", 65)
 
             else:
-                # Fetch — each source completion bumps progress within 10–45 %.
+                # Fetch — each source completion bumps progress within 10–55 %.
                 _set_progress(job_id, "fetching_news", 10)
 
                 def _on_source_done(name: str, done: int, total: int) -> None:
-                    # Map (1/N..N/N) → (10..45)
-                    pct = 10 + int((done / max(1, total)) * 35)
+                    # Map (1/N..N/N) → (10..55)
+                    pct = 10 + int((done / max(1, total)) * 45)
                     _set_progress(job_id, "fetching_news", pct)
 
                 stories = fetch_stories(
@@ -136,18 +136,13 @@ def _run_generation(
                 if not stories:
                     raise RuntimeError("No stories returned from any news source")
 
-                # ── Pass 1: AI triage ─────────────────────────────────────────
-                _set_progress(job_id, "triaging", 48)
-                triage = triage_articles(user, stories)
-                _set_progress(job_id, "triaging", 55)
-
-                # ── Pass 2: Gap-fill loop ─────────────────────────────────────
-                # Only one round, only if a local layer is genuinely empty. We no
-                # longer chase arbitrary "minimums" — the writer can't drop a
-                # layer anymore, so as long as each layer has SOMETHING we move on.
+                # ── Gap-fill ────────────────────────────────────────────────
+                # Only one round, only if a local layer is genuinely empty.
+                # Count articles by fetch_target to detect missing N/E coverage
+                # without running deterministic text-matching (AI does that later).
                 seen_ids: set[str] = {s["article_id"] for s in stories}
-                n_count = sum(1 for h in triage.values() if h["layer"] == "N")
-                e_count = sum(1 for h in triage.values() if h["layer"] == "E")
+                n_count = sum(1 for s in stories if s.get("fetch_target") == "local")
+                e_count = sum(1 for s in stories if s.get("fetch_target") == "national")
 
                 if n_count == 0 or e_count == 0:
                     logger.info(
@@ -158,10 +153,9 @@ def _run_generation(
                     extra = fetch_local_boost(user, seen_ids)
                     if extra:
                         stories.extend(extra)
-                        triage.update(triage_articles(user, extra))
 
-                # Hard cap — keep payload manageable
-                stories = stories[:180]
+                # Hard cap — keep the cached corpus large but bounded
+                stories = stories[:500]
 
                 session.add(CachedStories(
                     user_id=user_id,
@@ -169,19 +163,21 @@ def _run_generation(
                     stories=stories,
                 ))
                 session.commit()
-                _set_progress(job_id, "writing", 65)
 
-            # ── Pass 3: Bucket in Python, then write ─────────────────────────
+            # ── AI triage + write ────────────────────────────────────────────
+            def _on_progress(stage: str, pct: int) -> None:
+                _set_progress(job_id, stage, pct)
+
             report_data, raw_response = generate_report(
                 user, stories,
                 temperature=temperature,
-                triage_hints=triage,
                 targets={
                     "N": target_city,
                     "E": target_country,
                     "W": target_continent,
                     "S": target_world,
                 },
+                on_progress=_on_progress,
             )
 
             report = Report(
@@ -194,10 +190,25 @@ def _run_generation(
                 raw_response=raw_response,
             )
             _set_progress(job_id, "finalizing", 97)
-            session.add(report)
+            if existing_report is not None:
+                # Update the existing row atomically — the old report stays live
+                # until this final commit succeeds, so a failure anywhere before
+                # here leaves the user with their previous briefing intact.
+                existing_report.report_title = report_data.get("report_title", "Today's Briefing")
+                existing_report.opening_line = report_data.get("opening_line", "")
+                existing_report.closing_line = report_data.get("closing_line", "")
+                existing_report.sections = report_data.get("sections", {})
+                existing_report.raw_response = raw_response
+                session.add(existing_report)
+            else:
+                session.add(report)
 
-            # Re-read the job since _set_progress may have updated it via another session
+            # Re-read the job since _set_progress may have updated it via another session.
+            # Guard: if the job was superseded while we were running, do not overwrite its
+            # status — the new job owns this user's generation slot now.
             session.refresh(job)
+            if job.status != "running":
+                return
             job.status = "completed"
             job.stage = "completed"
             job.progress = 100
@@ -235,12 +246,24 @@ def _run_generation(
                 last_frames = "\n".join(tail.strip().splitlines()[-6:])
                 ui_msg = f"{ui_msg}\n{last_frames}"
 
-            session.refresh(job)
-            job.status = "failed"
-            job.error_message = ui_msg
-            job.updated_at = datetime.utcnow()
-            session.add(job)
-            session.commit()
+            # The main session may be in an invalid/rolled-back state after a failed
+            # DB operation, so use a fresh session here. Without this, the
+            # session.refresh() call below would itself raise InvalidRequestError and
+            # the job would remain permanently stuck as "running".
+            try:
+                with Session(engine) as err_session:
+                    err_job = err_session.get(GenerationJob, job_id)
+                    if err_job:
+                        err_job.status = "failed"
+                        err_job.error_message = ui_msg
+                        err_job.updated_at = datetime.utcnow()
+                        err_session.add(err_job)
+                        err_session.commit()
+            except Exception as mark_exc:
+                logger.error(
+                    "Failed to mark job %s as failed (secondary error): %s",
+                    job_id, mark_exc,
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -260,10 +283,10 @@ def generate(
     use_nytimes: bool = Query(default=True),
     # Per-layer story target. Each layer is independently capped at this many.
     # Names kept as min_* for frontend backwards-compat; they now act as targets.
-    min_city: int = Query(default=8, ge=0, le=30),
-    min_country: int = Query(default=8, ge=0, le=30),
-    min_continent: int = Query(default=8, ge=0, le=30),
-    min_world: int = Query(default=12, ge=0, le=40),
+    min_city: int = Query(default=15, ge=0, le=60),
+    min_country: int = Query(default=15, ge=0, le=60),
+    min_continent: int = Query(default=10, ge=0, le=60),
+    min_world: int = Query(default=40, ge=0, le=120),
     # "generate" | "ai-only" | "from-scratch" — used for display only
     job_type: str = Query(default="generate"),
     current_user: User = Depends(get_current_user),

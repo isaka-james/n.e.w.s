@@ -294,9 +294,9 @@ export default function SettingsPage() {
                   Priority
                 </p>
               </div>
-              <div className="px-5 py-4 space-y-3">
+              <div className="px-4 sm:px-5 py-4 space-y-3">
                 {tags.map((tag) => (
-                  <div key={tag.name} className="flex items-center justify-between">
+                  <div key={tag.name} className="flex items-center justify-between gap-3 flex-wrap">
                     <span className="text-[14px]" style={{ fontFamily: "'Rufina', Georgia, serif", color: "#0a0f1e" }}>
                       {tag.emoji ?? "🏷️"} {tag.name}
                     </span>
@@ -381,7 +381,7 @@ export default function SettingsPage() {
         {/* Automation */}
         <Section number="V" title="Automation">
           <div
-            className="p-6"
+            className="p-5 sm:p-6"
             style={{ background: "#ffffff", border: "1px solid #d8d0c4" }}
           >
             {/* Enable toggle */}
@@ -429,7 +429,7 @@ export default function SettingsPage() {
             {autoEnabled && (
               <div className="mt-5 pt-5" style={{ borderTop: "1px solid #ede8df" }}>
                 <Field label="Daily generation time (UTC 24-hour)">
-                  <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-3 sm:gap-4 flex-wrap">
                     <input
                       type="time"
                       value={autoTime}

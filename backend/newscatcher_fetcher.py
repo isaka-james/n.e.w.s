@@ -293,6 +293,7 @@ def _flatten_records(pull_data: dict, fallback_country: str | None) -> list[dict
                 "source_icon": None,
                 "country": fallback_country,
                 "category": [],
+                "fetch_target": "global",
                 "keywords": [],
                 "pubDate": cit.get("published_date") or "",
                 "language": "en",

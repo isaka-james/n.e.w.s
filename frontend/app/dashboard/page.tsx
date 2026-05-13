@@ -129,6 +129,30 @@ export default function DashboardPage() {
             finish(taskIdRef.current, "error", job.error_message ?? "Report generation failed.");
             taskIdRef.current = null;
           }
+          return;
+        }
+        // Safety net: job is "completed" but today() returned null on this tick
+        // (parallel requests can straddle the commit boundary). Retry once
+        // immediately; if the report still isn’t there, stop spinning with an error
+        // rather than leaving the user stuck in the generating overlay forever.
+        if (job && job.status === "completed") {
+          const retry = await api.reports.today();
+          if (retry) {
+            setReport(retry);
+            setGenerating(false);
+            setProgress(100);
+            setStage("completed");
+            if (taskIdRef.current) {
+              finish(taskIdRef.current, "success", "Briefing ready, stories filtered and written across all four layers.");
+              taskIdRef.current = null;
+            }
+          } else {
+            setGenerating(false);
+            if (taskIdRef.current) {
+              finish(taskIdRef.current, "error", "Generation completed but the briefing could not be loaded. Try refreshing.");
+              taskIdRef.current = null;
+            }
+          }
         }
       } catch { /* keep polling */ }
     };
@@ -137,7 +161,7 @@ export default function DashboardPage() {
     // hammering the API. Each call is cheap (single DB row + ETag-friendly).
     const id = setInterval(poll, 2000);
     return () => clearInterval(id);
-  }, [generating, finish]);
+  }, [generating, finish, update]);
 
   const handleGenerate = async () => {
     setGenerating(true);
@@ -243,11 +267,11 @@ export default function DashboardPage() {
           <div className="py-16 md:py-20 px-6 md:px-12" style={{ background: "#ffffff", border: "1px solid #d8d0c4" }}>
             <div className="max-w-md mx-auto text-center">
               <Loader2 size={28} className="animate-spin mx-auto mb-6" style={{ color: "#b8962e" }} strokeWidth={1.5} />
-              <h3 className="text-[24px] mb-2" style={{ fontFamily: "'Rufina', Georgia, serif", color: "#0a0f1e" }}>
+              <h3 className="text-[20px] sm:text-[24px] mb-2" style={{ fontFamily: "'Rufina', Georgia, serif", color: "#0a0f1e" }}>
                 {stageLabel(stage)}
               </h3>
               <p className="text-[13px] leading-relaxed mb-8" style={{ color: "#787878" }}>
-                N.E.W.S. is preparing today&apos;s briefing. Usually about 30 to 90 seconds.
+                N.E.W.S. is preparing today&apos;s briefing. Usually takes up to a few minutes.
               </p>
 
               {/* Progress bar */}
@@ -355,7 +379,7 @@ export default function DashboardPage() {
             {section && (
               <section>
                 {/* Section label */}
-                <div className="text-center mb-10">
+                <div className="text-center mb-8 md:mb-10">
                   <p
                     className="text-[11px] tracking-[0.3em] uppercase mb-3"
                     style={{ color: "#b8962e", fontWeight: 600 }}
@@ -363,7 +387,7 @@ export default function DashboardPage() {
                     {section.label}
                   </p>
                   <p
-                    className="text-[18px] italic leading-relaxed max-w-2xl mx-auto"
+                    className="text-[15px] sm:text-[17px] md:text-[18px] italic leading-relaxed max-w-2xl mx-auto"
                     style={{ fontFamily: "'Rufina', Georgia, serif", color: "#3a3a3a" }}
                   >
                     {section.mood_line}
@@ -371,7 +395,7 @@ export default function DashboardPage() {
                 </div>
 
                 {section.stories.length === 0 ? (
-                  <div className="text-center py-16" style={{ background: "#ffffff", border: "1px solid #d8d0c4" }}>
+                  <div className="text-center py-12 md:py-16 px-4" style={{ background: "#ffffff", border: "1px solid #d8d0c4" }}>
                     <p className="text-[14px] italic" style={{ fontFamily: "'Rufina', Georgia, serif", color: "#787878" }}>
                       Nothing notable here today.
                     </p>
@@ -380,14 +404,14 @@ export default function DashboardPage() {
                   <>
                     {/* Featured (first story, full width) */}
                     {section.stories[0] && (
-                      <div className="mb-8" style={{ border: "1px solid #d8d0c4" }}>
+                      <div className="mb-6 md:mb-8" style={{ border: "1px solid #d8d0c4" }}>
                         <StoryCard story={section.stories[0]} featured />
                       </div>
                     )}
 
                     {/* Remaining in 2-col grid */}
                     {section.stories.length > 1 && (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-5 md:gap-8">
                         {section.stories.slice(1).map((story) => (
                           <div key={story.article_id} style={{ border: "1px solid #d8d0c4" }}>
                             <StoryCard story={story} />
@@ -401,10 +425,10 @@ export default function DashboardPage() {
             )}
 
             {/* Closing line */}
-            <div className="mt-20 max-w-3xl mx-auto text-center">
+            <div className="mt-12 md:mt-20 max-w-3xl mx-auto text-center">
               <div className="gold-rule mx-auto mb-6" style={{ width: "60px" }} />
               <p
-                className="text-[16px] leading-[1.6] italic"
+                className="text-[15px] sm:text-[16px] leading-[1.6] italic"
                 style={{ fontFamily: "'Rufina', Georgia, serif", color: "#787878" }}
               >
                 {report.closing_line}

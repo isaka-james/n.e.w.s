@@ -76,91 +76,70 @@ client = OpenAI(
     base_url="https://api.deepseek.com/v1",
 )
 
-SYSTEM_PROMPT = """You are a news briefing writer. You receive a user profile and a set of articles ALREADY bucketed into four geographic layers (N, E, W, S). Your only job is to rewrite each article as a short editorial card and add prose around the report.
+SYSTEM_PROMPT = """You are a senior news editor building a personalised briefing. Articles have been classified into four geographic layers (N, E, W, S) by an AI triage system. Your job has three parts:
 
-You do NOT filter, drop, merge, re-rank, or re-classify articles. Every article you receive must appear in its assigned layer in the output, in the same order. Bucketing is handled upstream.
+1) SELECT the best articles per layer, up to the `targets` count in the user message:
+   - HIGH PRIORITY RULE for N and E: these layers must be as FULL as possible.
+     Publish up to the target even if some articles are not breaking news — local events,
+     background pieces, and soft news are all valid for N and E. Never leave N or E empty
+     when candidates exist, even if the content feels routine.
+   - For W and S: prefer impact, specificity, and non-redundancy.
+   - Deduplicate: if two articles clearly cover the same EVENT, keep the one with the
+     richer description or an image. Keep both if they cover different angles.
+   - Do NOT move articles between layers.
+   - Articles with `matched_tags` are more relevant to this reader — give them mild preference.
 
-Each article has a title and a short description snippet (not the full article). Base your rewrites ONLY on what the title and description actually say. Do not invent details.
+2) REWRITE each selected article as a card:
+   - headline: punchy and clear, rewritten from the original title, no clickbait
+   - hook: one sentence that creates interest
+   - summary: 1-2 sentences based ONLY on what the title and description say. Do not invent facts.
+   - tone_label: ONE of BREAKING, VIRAL, ANALYSIS, SIGNAL, INSIGHT, LIGHTHEARTED
 
-For each article, write:
-- headline: rewritten from the original title — punchy, clear, no clickbait
-- hook: one sentence that creates interest
-- summary: 1-2 sentences based ONLY on the title and description. If the description is thin, keep it short.
-- tone_label: ONE of: BREAKING, VIRAL, ANALYSIS, SIGNAL, INSIGHT, LIGHTHEARTED
+   Tones:
+     BREAKING — happening right now, fast-moving
+     VIRAL — spreading fast, buzzy, high social interest
+     ANALYSIS — expert opinion, deep reporting, investigation
+     SIGNAL — early sign of a bigger trend
+     INSIGHT — teaches something genuinely new
+     LIGHTHEARTED — actually funny or heartwarming (only when it truly is)
 
-Tones:
-- BREAKING — happening right now, fast-moving
-- VIRAL — spreading fast, buzzy, high social interest
-- ANALYSIS — expert opinion, deep reporting, investigation
-- SIGNAL — early sign of a bigger trend
-- INSIGHT — teaches something genuinely new
-- LIGHTHEARTED — actually funny or heartwarming (only when it truly is)
+3) WRITE report-level prose:
+   - report_title: creative and specific to today's news mood, never generic
+   - opening_line: 2-3 sentences, sharp and conversational, no name. Never say \"Here is your daily briefing.\"
+   - closing_line: 1-2 sentences, reflective or observational, never preachy
+   - Per layer a mood_line: ONE punchy sentence. If zero articles, set to \"Nothing notable here today.\"
 
-For the report itself, write:
-- report_title: creative, specific to today's news mood, never generic
-- opening_line: 2-3 sentences, sharp and conversational, written to the reader without using their name. Never say "Here is your daily briefing."
-- closing_line: 1-2 sentences, reflective or observational, never preachy
-- For each layer, a mood_line: ONE punchy sentence. If the layer's stories array is empty, set mood_line to "Nothing notable here today."
+Hard rules:
+   - Every article_id in the output MUST come from the input. Never invent an article_id.
+   - Each article_id may appear in AT MOST ONE layer.
+   - Do NOT move articles between layers.
 
 Return only valid JSON, no markdown, no backticks, no explanation:
 
 {
-  "report_title": "string",
-  "report_date": "ISO date",
-  "opening_line": "string",
-  "closing_line": "string",
-  "sections": {
-    "N": {
-      "label": "Narrow · city name",
-      "mood_line": "string",
-      "stories": [
-        {
-          "article_id": "string",
-          "headline": "string",
-          "hook": "string",
-          "summary": "string",
-          "tone_label": "string"
-        }
+  \"report_title\": \"string\",
+  \"report_date\": \"ISO date\",
+  \"opening_line\": \"string\",
+  \"closing_line\": \"string\",
+  \"sections\": {
+    \"N\": {
+      \"mood_line\": \"string\",
+      \"stories\": [
+        { \"article_id\": \"string\", \"headline\": \"string\", \"hook\": \"string\", \"summary\": \"string\", \"tone_label\": \"string\" }
       ]
     },
-    "E": { "label": "Expanded · country", "mood_line": "string", "stories": [...] },
-    "W": { "label": "Wide · continent", "mood_line": "string", "stories": [...] },
-    "S": { "label": "Sweeping · World", "mood_line": "string", "stories": [...] }
+    \"E\": { \"mood_line\": \"string\", \"stories\": [...] },
+    \"W\": { \"mood_line\": \"string\", \"stories\": [...] },
+    \"S\": { \"mood_line\": \"string\", \"stories\": [...] }
   }
 }
 
-The stories array for each layer MUST contain exactly the same number of entries as the input layer, in the same order, with the same article_id values. Do not add, remove, or reorder articles.
-
-Never use: delve, crucial, groundbreaking, game-changer, it's worth noting, in conclusion, furthermore. Write like a sharp human editor. Summaries must never start with "This article discusses."
+Never use: delve, crucial, groundbreaking, game-changer, it's worth noting, in conclusion, furthermore. Write like a sharp human editor. Summaries must never start with \"This article discusses.\"
 """
 
 # ---------------------------------------------------------------------------
 # Pass 1 — lightweight triage: classify articles into layers + score them
 # ---------------------------------------------------------------------------
-
-_TRIAGE_PROMPT = """You are a geographic news article classifier for a personalized briefing engine.
-
-Given a user location and a list of articles, assign each article:
-
-layer — geographic relevance:
-  N = specifically about the user's CITY (country matches user's country AND city name appears in title/description)
-  E = about the user's COUNTRY (country matches, city not specifically mentioned)
-  W = about the user's CONTINENT or an immediately neighbouring country
-  S = global / other continents / Technology / AI / Cybersecurity / Science / Space (always S regardless of country)
-
-score — relevance 0.0–1.0:
-  +0.40 high-priority tag match
-  +0.20 medium-priority tag match
-  +0.10 low-priority tag match
-  +0.10 if pubDate suggests published in last 12 hours
-  +0.05 if image_url is present
-
-Return ONLY compact valid JSON, no markdown, no explanation:
-{"results": [{"id": "article_id", "layer": "S", "score": 0.45}, ...]}
-
-Every input article must appear in results. Score 0.0 for articles you would normally drop.
-"""
-
 
 def _strip_fences(raw: str) -> str:
     raw = raw.strip()
@@ -239,96 +218,379 @@ def _safe_json_load(raw: str) -> dict:
         return json.loads(repaired)  # if this still fails, surface to caller
 
 
-def triage_articles(user, stories: list[dict]) -> dict[str, dict]:
-    """
-    Pass 1 — classify articles into N/E/W/S layers and score them.
-    Fast and cheap: sends only article_id, title, trimmed description, country, category.
-    Returns {article_id: {layer, score}} or {} on failure (caller treats empty as unknown).
-    """
-    if not stories:
-        return {}
-
-    compact = [
-        {
-            "id": s["article_id"],
-            "title": s["title"],
-            "desc": (s.get("description") or "")[:150],
-            "country": s.get("country"),
-            "category": s.get("category") or [],
-            "image_url": bool(s.get("image_url")),
-            "pubDate": s.get("pubDate", ""),
-        }
-        for s in stories
-    ]
-
-    user_msg = json.dumps(
-        {
-            "user": {
-                "city": user.city,
-                "country": user.country,
-                "continent": user.continent,
-                "tags": user.tags or [],
-            },
-            "articles": compact,
-        },
-        ensure_ascii=False,
-    )
-
-    messages = [
-        {"role": "system", "content": _TRIAGE_PROMPT},
-        {"role": "user", "content": user_msg},
-    ]
-    try:
-        response = client.chat.completions.create(
-            model="deepseek-chat",
-            messages=messages,
-            temperature=0.1,
-            # 8K is deepseek-chat's max output; previously 4K, which truncated
-            # whenever ~150+ articles came in (each result row is ~35 tokens).
-            max_tokens=8192,
-            # Enforces a parseable JSON object — eliminates mid-string truncation
-            # from the model's side (it self-closes when nearing the cap).
-            response_format={"type": "json_object"},
-        )
-        summary = _summarize_response(response, "triage")
-        content = (response.choices[0].message.content or "").strip()
-        if not content:
-            # Common cause: rate-limit, content filter, or finish_reason=length
-            # with no actual content generated. Triage is non-fatal — log loud
-            # and return empty hints so the writer pass can still run.
-            logger.warning(
-                "Triage returned empty content — prompt=%s response=%s",
-                _summarize_messages(messages), summary,
-            )
-            return {}
-        data = _safe_json_load(content)
-        return {
-            r["id"]: {"layer": r.get("layer", "S"), "score": float(r.get("score", 0.3))}
-            for r in (data.get("results") or [])
-            if r.get("id")
-        }
-    except Exception as exc:
-        # Triage failures are recoverable (the writer still runs without hints),
-        # so we log a full diagnostic block but don't raise.
-        logger.warning(
-            "Triage failed (%s) — proceeding without hints. prompt=%s",
-            exc, _summarize_messages(messages),
-        )
-        return {}
-
-
 # ---------------------------------------------------------------------------
-# Deterministic bucketing — runs in Python after triage, before the writer.
+# Deterministic bucketing — pure Python geo lookup. The AI used to do this
+# job via triage, but it kept dumping non-continent articles into W instead of
+# S — a country/continent lookup is a deterministic task the model shouldn't
+# be guessing at. So we do it ourselves: layer + score are both computed here.
 # ---------------------------------------------------------------------------
 
 _VALID_LAYERS = ("N", "E", "W", "S")
 
+# Country → continent. Mirrors the map in users_router. Kept in this module so
+# the bucketing logic is self-contained and easy to update.
+_CONTINENT_BY_COUNTRY: dict[str, str] = {
+    "Afghanistan": "Asia", "Albania": "Europe", "Algeria": "Africa",
+    "Argentina": "South America", "Armenia": "Asia", "Australia": "Oceania",
+    "Austria": "Europe", "Azerbaijan": "Asia", "Bahrain": "Asia",
+    "Bangladesh": "Asia", "Belarus": "Europe", "Belgium": "Europe",
+    "Bolivia": "South America", "Bosnia and Herzegovina": "Europe",
+    "Botswana": "Africa", "Brazil": "South America", "Bulgaria": "Europe",
+    "Cambodia": "Asia", "Cameroon": "Africa", "Canada": "North America",
+    "Chile": "South America", "China": "Asia", "Colombia": "South America",
+    "Croatia": "Europe", "Cuba": "North America", "Czech Republic": "Europe",
+    "Denmark": "Europe", "Dominican Republic": "North America", "Ecuador": "South America",
+    "Egypt": "Africa", "Estonia": "Europe", "Ethiopia": "Africa", "Finland": "Europe",
+    "France": "Europe", "Georgia": "Asia", "Germany": "Europe", "Ghana": "Africa",
+    "Greece": "Europe", "Hungary": "Europe", "Iceland": "Europe", "India": "Asia",
+    "Indonesia": "Asia", "Iran": "Asia", "Iraq": "Asia", "Ireland": "Europe",
+    "Israel": "Asia", "Italy": "Europe", "Japan": "Asia", "Jordan": "Asia",
+    "Kazakhstan": "Asia", "Kenya": "Africa", "Kuwait": "Asia", "Latvia": "Europe",
+    "Lebanon": "Asia", "Libya": "Africa", "Lithuania": "Europe", "Luxembourg": "Europe",
+    "Malaysia": "Asia", "Malta": "Europe", "Mexico": "North America", "Moldova": "Europe",
+    "Mongolia": "Asia", "Montenegro": "Europe", "Morocco": "Africa", "Myanmar": "Asia",
+    "Nepal": "Asia", "Netherlands": "Europe", "New Zealand": "Oceania",
+    "Nigeria": "Africa", "North Korea": "Asia", "North Macedonia": "Europe",
+    "Norway": "Europe", "Oman": "Asia", "Pakistan": "Asia", "Panama": "North America",
+    "Paraguay": "South America", "Peru": "South America", "Philippines": "Asia",
+    "Poland": "Europe", "Portugal": "Europe", "Qatar": "Asia", "Romania": "Europe",
+    "Russia": "Europe", "Saudi Arabia": "Asia", "Senegal": "Africa", "Serbia": "Europe",
+    "Singapore": "Asia", "Slovakia": "Europe", "Slovenia": "Europe", "Somalia": "Africa",
+    "South Africa": "Africa", "South Korea": "Asia", "Spain": "Europe",
+    "Sri Lanka": "Asia", "Sudan": "Africa", "Sweden": "Europe", "Switzerland": "Europe",
+    "Syria": "Asia", "Taiwan": "Asia", "Tanzania": "Africa", "Thailand": "Asia",
+    "Tunisia": "Africa", "Turkey": "Asia", "Uganda": "Africa", "Ukraine": "Europe",
+    "United Arab Emirates": "Asia", "United Kingdom": "Europe",
+    "United States": "North America", "Uruguay": "South America",
+    "Venezuela": "South America", "Vietnam": "Asia", "Yemen": "Asia",
+    "Zambia": "Africa", "Zimbabwe": "Africa",
+}
+
+# Common name variants we see in fetcher output. Mapped to the canonical name
+# in _CONTINENT_BY_COUNTRY so layer assignment doesn't get tripped up by case
+# or punctuation differences.
+_COUNTRY_ALIASES: dict[str, str] = {
+    "united states of america": "United States",
+    "usa": "United States",
+    "u.s.": "United States",
+    "u.s.a.": "United States",
+    "america": "United States",
+    "uk": "United Kingdom",
+    "u.k.": "United Kingdom",
+    "great britain": "United Kingdom",
+    "britain": "United Kingdom",
+    "uae": "United Arab Emirates",
+    "korea, republic of": "South Korea",
+    "korea": "South Korea",
+    "russian federation": "Russia",
+}
+
+# Categories that are inherently global. An article tagged any of these goes
+# straight to S regardless of its country — same rule the old AI prompt had.
+_GLOBAL_CATEGORIES = {
+    "technology", "tech", "ai", "artificial intelligence", "cybersecurity",
+    "security", "science", "space",
+}
+
+# Demonyms / adjectives so the text rule catches "Tanzanian president" not just
+# "Tanzania president". Only the most common forms — anything unusual just falls
+# through to the country tag fallback.
+_COUNTRY_ADJECTIVES: dict[str, list[str]] = {
+    "United States": ["american", "u.s.", "u.s.a."],
+    "United Kingdom": ["british", "uk", "u.k."],
+    "Tanzania": ["tanzanian"],
+    "Kenya": ["kenyan"],
+    "Uganda": ["ugandan"],
+    "Rwanda": ["rwandan"],
+    "Nigeria": ["nigerian"],
+    "Ghana": ["ghanaian"],
+    "South Africa": ["south african"],
+    "Egypt": ["egyptian"],
+    "Morocco": ["moroccan"],
+    "Ethiopia": ["ethiopian"],
+    "China": ["chinese"],
+    "Japan": ["japanese"],
+    "India": ["indian"],
+    "Russia": ["russian"],
+    "Germany": ["german"],
+    "France": ["french"],
+    "Italy": ["italian"],
+    "Spain": ["spanish"],
+    "Brazil": ["brazilian"],
+    "Mexico": ["mexican"],
+    "Canada": ["canadian"],
+    "Australia": ["australian"],
+}
+
+_CONTINENT_ADJECTIVES: dict[str, list[str]] = {
+    "Africa": ["african", "africans"],
+    "Asia": ["asian", "asians"],
+    "Europe": ["european", "europeans"],
+    "North America": ["north american"],
+    "South America": ["south american", "latin american"],
+    "Oceania": ["oceanic", "pacific"],
+}
+
+
+def _normalize_country(raw: str | None) -> str:
+    """Return the canonical country name, or '' if unknown.
+
+    Handles common case/punctuation variants ("united states of america" →
+    "United States") so country→continent lookups succeed regardless of which
+    fetcher emitted the article.
+    """
+    if not raw:
+        return ""
+    cleaned = raw.strip()
+    if not cleaned:
+        return ""
+    lower = cleaned.lower()
+    if lower in _COUNTRY_ALIASES:
+        return _COUNTRY_ALIASES[lower]
+    # Case-insensitive match against the canonical map
+    for canonical in _CONTINENT_BY_COUNTRY:
+        if canonical.lower() == lower:
+            return canonical
+    return cleaned  # unknown — return as-is for logging, won't match anyway
+
+
+def _continent_of(country: str) -> str:
+    """Continent for the canonical country name, or '' if unknown."""
+    return _CONTINENT_BY_COUNTRY.get(country, "")
+
+
+def _word_in(text: str, term: str) -> bool:
+    """Whole-word case-insensitive match (so 'Iran' doesn't match 'Iranian').
+
+    A plain `in` check would put articles about 'iranian elections' into the
+    Iran bucket even when the user is in 'iraq' (or vice versa), so we anchor
+    with simple non-letter boundaries.
+    """
+    if not term or not text:
+        return False
+    pattern = r"(?<![a-z])" + re.escape(term.lower()) + r"(?![a-z])"
+    return bool(re.search(pattern, text))
+
+
+def _continent_country_terms(continent: str, exclude: str | None = None) -> list[str]:
+    """All country names + adjectives on a given continent, excluding one country.
+
+    Used to detect "this article is about another country on my continent" so
+    e.g. a Tanzanian user gets Kenya/Uganda stories routed to W (continent).
+    """
+    terms: list[str] = []
+    for country, cont in _CONTINENT_BY_COUNTRY.items():
+        if cont != continent or country == exclude:
+            continue
+        terms.append(country.lower())
+        terms.extend(a.lower() for a in _COUNTRY_ADJECTIVES.get(country, []))
+    return terms
+
+
+def _assign_layer(article: dict, user) -> str:
+    """Pick N/E/W/S — text-first, with smarter fallbacks.
+
+    N and E always take priority over global-topic categories. A Tanzanian
+    tech-startup article tagged 'technology' should be E, not S.
+
+    Rules (in order):
+      N — user's city named in title/desc
+          OR fetcher tagged it "local" AND article country = user's country
+      E — user's country (or its adjective) named in title/desc
+          OR article country tag == user's country and not a global topic
+      S — global topic (tech/AI/science/space), checked AFTER N/E
+      W — continent/adjective named in title/desc,
+          OR another country on the same continent named in title/desc,
+          OR article country tag is a continent neighbour
+      S — fallback
+    """
+    title_desc = ((article.get("title") or "") + " " + (article.get("description") or "")).lower()
+    article_cats_lower = [c.lower() for c in (article.get("category") or [])]
+    categories_str = " ".join(article_cats_lower)
+    keywords_str = " ".join(article.get("keywords") or []).lower()
+    topic_haystack = f"{categories_str} {keywords_str}"
+
+    user_city = (user.city or "").strip()
+    user_country = (user.country or "").strip()
+    user_continent = (user.continent or "").strip()
+    article_country = _normalize_country(article.get("country"))
+
+    # ── N: city named in text ─────────────────────────────────────────────────
+    if user_city and _word_in(title_desc, user_city):
+        return "N"
+
+    # ── N: fetcher explicitly tagged this as a local city result ─────────────
+    # Fetchers set category="local" only on city-targeted searches.
+    if "local" in article_cats_lower and article_country == user_country:
+        return "N"
+
+    # ── E: country named in text ──────────────────────────────────────────────
+    country_terms = [user_country.lower()] + [
+        a.lower() for a in _COUNTRY_ADJECTIVES.get(user_country, [])
+    ]
+    if any(_word_in(title_desc, t) for t in country_terms if t):
+        return "E"
+
+    # ── E: country tag matches + no other continent-country in the text ───────────
+    # Fetchers stamp country=user.country on ALL results from country/city queries,
+    # even articles that are primarily about a neighbouring country. The text check
+    # above already caught articles that name the country. This fallback handles
+    # articles that don't repeat the country name but were fetched by a country
+    # search. Guard: if a neighbour's name appears in text, this is a W article.
+    is_global_topic = any(t in topic_haystack for t in _GLOBAL_CATEGORIES)
+    if article_country == user_country and not is_global_topic and "local" not in article_cats_lower:
+        neighbor_terms = _continent_country_terms(user_continent, exclude=user_country)
+        has_neighbour_in_text = any(_word_in(title_desc, t) for t in neighbor_terms)
+        if not has_neighbour_in_text:
+            return "E"
+
+    # ── S: pure global topic (after N/E have had their chance) ───────────────
+    if is_global_topic:
+        return "S"
+
+    # ── W: continent name / adjective in text ────────────────────────────────
+    continent_terms = [user_continent.lower()] + [
+        a.lower() for a in _CONTINENT_ADJECTIVES.get(user_continent, [])
+    ]
+    if any(_word_in(title_desc, t) for t in continent_terms if t):
+        return "W"
+    for term in _continent_country_terms(user_continent, exclude=user_country):
+        if _word_in(title_desc, term):
+            return "W"
+
+    # ── W: article country tag is a continent neighbour ───────────────────────
+    if article_country and article_country != user_country:
+        if _continent_of(article_country) == user_continent:
+            return "W"
+
+    return "S"
+
+
+# ---------------------------------------------------------------------------
+# AI triage — one DeepSeek-chat call classifies all articles by content,
+# overcoming the limits of pure text-matching for N/E layer assignment.
+# ---------------------------------------------------------------------------
+
+_TRIAGE_SYSTEM = """\
+You are a geographic news classifier. Classify each article into one layer.
+
+User location:
+  City      = the city they live in (may be small, rural, or not well-known globally)
+  Country   = their country
+  Continent = their continent
+
+Each article has these fields:
+  article_id       — unique ID (use as output key)
+  title            — article headline
+  description      — article summary
+  fetch_layer_hint — which layer this article was fetched for:
+                     "local"    = fetched by a CITY-targeted search → strong signal for N
+                     "national" = fetched by a COUNTRY-targeted search → strong signal for E
+                     "regional" = fetched by a CONTINENT-targeted search → strong signal for W
+                     "global"   = fetched from a global topic section → likely W or S
+
+Layer definitions (N > E > W > S priority — always assign the most local layer that fits):
+
+  N — CITY layer. Bias strongly toward N.
+      • ALWAYS assign N when fetch_layer_hint is "local" UNLESS the title/description
+        clearly names a different city or a national/global event.
+      • Assign N if the city name appears anywhere in title or description.
+      • Local news (crime, infrastructure, local politics, community events) that is
+        plausibly in or near the city even without an explicit city mention.
+
+  E — COUNTRY layer. Bias strongly toward E.
+      • ALWAYS assign E when fetch_layer_hint is "national" UNLESS the title/description
+        clearly names a DIFFERENT country as the primary subject.
+      • Assign E if the country name or a national institution appears anywhere.
+      • National politics, economy, domestic sport/culture → E even with international angles.
+      • When in doubt between E and W, choose E.
+      • When in doubt between E and S, choose E unless clearly global.
+
+  W — CONTINENT layer.
+      • Another country on the same continent, or a continental/regional body.
+
+  S — WORLD layer (last resort).
+      • Other continents, truly global stories, space, generic worldwide tech.
+
+Return ONLY a flat JSON object: article_id → layer letter. No explanation.
+Example: {"a1b2c3": "N", "d4e5f6": "E", "g7h8i9": "S"}
+"""
+
+
+def triage_articles_with_ai(user, articles: list[dict]) -> dict[str, str]:
+    """Classify all articles into N/E/W/S with a DeepSeek-chat call per batch.
+
+    Returns {article_id: layer}. Gracefully returns {} on total failure so
+    callers fall back to "S" (world) for unclassified articles.
+
+    BATCH_SIZE is kept small so each response comfortably fits in max_tokens.
+    Each article ID is a 32-char hex string that tokenises at ~25 tokens per
+    output line; 100 articles × 25 ≈ 2,500 output tokens, well within 4,096.
+    """
+    if not articles:
+        return {}
+
+    BATCH_SIZE = 100   # 100 × ~25 output tokens/article = ~2,500 tokens, safe within 4,096
+    result: dict[str, str] = {}
+
+    for batch_start in range(0, len(articles), BATCH_SIZE):
+        batch = articles[batch_start: batch_start + BATCH_SIZE]
+
+        compact = [
+            {
+                "article_id": a["article_id"],
+                "title": (a.get("title") or "")[:120],
+                "description": (a.get("description") or "")[:150],
+                # Hint to triage: which layer this article was fetched for.
+                # "local"=city search, "national"=country search, "regional"=continent.
+                "fetch_layer_hint": a.get("fetch_target", ""),
+            }
+            for a in batch
+        ]
+
+        user_message = (
+            f"City: {user.city} | Country: {user.country} | Continent: {user.continent}\n\n"
+            f"Articles:\n{json.dumps(compact, ensure_ascii=False)}"
+        )
+
+        try:
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": _TRIAGE_SYSTEM},
+                    {"role": "user", "content": user_message},
+                ],
+                temperature=0,
+                max_tokens=4096,
+                response_format={"type": "json_object"},
+            )
+            raw = response.choices[0].message.content or ""
+            data = _safe_json_load(raw)
+            # Accept only valid layer codes; ignore anything else
+            valid = {k: v for k, v in data.items() if v in ("N", "E", "W", "S")}
+            result.update(valid)
+        except Exception as exc:
+            logger.warning(
+                "AI triage batch %d–%d failed (falling back to deterministic): %s",
+                batch_start, batch_start + len(batch), exc,
+            )
+
+    n = sum(1 for v in result.values() if v == "N")
+    e = sum(1 for v in result.values() if v == "E")
+    w = sum(1 for v in result.values() if v == "W")
+    s = sum(1 for v in result.values() if v == "S")
+    logger.info(
+        "AI triage complete: %d/%d classified — N=%d E=%d W=%d S=%d",
+        len(result), len(articles), n, e, w, s,
+    )
+    return result
+
 
 def _matched_tags(story: dict, user_tags: list[dict]) -> list[str]:
-    """Return the user's tags whose name appears in the article's title/desc/keywords/category.
+    """Return the user's tags whose name appears anywhere in the article's text.
 
-    Used both for matched_tags display and as a sanity check that we don't
-    keep articles unconnected to the user's interests. Case-insensitive.
+    Used both for the matched_tags display field and as a scoring signal.
+    Case-insensitive substring match across title/desc/keywords/category.
     """
     haystack = " ".join([
         story.get("title") or "",
@@ -342,31 +604,81 @@ def _matched_tags(story: dict, user_tags: list[dict]) -> list[str]:
     ]
 
 
+def _score_article(article: dict, user_tags: list[dict]) -> float:
+    """Deterministic 0–1 relevance score. Mirrors what the AI used to compute.
+
+    Baseline 0.2 keeps unrelated-but-clean articles eligible (so empty user-tag
+    profiles don't end up with an empty briefing). Tag matches, recency, and a
+    cover image all bump it up.
+    """
+    haystack = " ".join([
+        article.get("title") or "",
+        article.get("description") or "",
+        " ".join(article.get("category") or []),
+        " ".join(article.get("keywords") or []),
+    ]).lower()
+
+    score = 0.20
+    for tag in user_tags or []:
+        name = (tag.get("name") or "").lower()
+        if not name or name not in haystack:
+            continue
+        priority = tag.get("priority", "medium")
+        score += {"high": 0.40, "medium": 0.20, "low": 0.10}.get(priority, 0.20)
+
+    if article.get("image_url"):
+        score += 0.05
+
+    pub = article.get("pubDate") or ""
+    if pub and _published_within_hours(pub, 12):
+        score += 0.10
+
+    return min(1.0, score)
+
+
+def _published_within_hours(pub_iso: str, hours: int) -> bool:
+    """True if pub_iso parses and is within the last `hours`. Lenient on parse errors."""
+    if not pub_iso:
+        return False
+    try:
+        from datetime import datetime, timezone, timedelta
+        normalized = pub_iso.strip().replace(" ", "T")
+        if normalized.endswith("Z"):
+            normalized = normalized[:-1] + "+00:00"
+        dt = datetime.fromisoformat(normalized)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt) <= timedelta(hours=hours)
+    except (ValueError, TypeError):
+        return False
+
+
 def _is_blocked(story: dict, blocked_words: list[str]) -> bool:
     """True if any blocked word appears in title or description (case-insensitive)."""
     if not blocked_words:
         return False
-    haystack = (story.get("title") or "" + " " + (story.get("description") or "")).lower()
+    title = (story.get("title") or "").lower()
+    desc = (story.get("description") or "").lower()
+    haystack = f"{title} {desc}"
     return any(w.lower() in haystack for w in blocked_words if w)
 
 
 def bucket_stories(
     user,
     stories: list[dict],
-    triage_hints: dict[str, dict],
     targets: dict[str, int],
+    ai_layers: dict[str, str] | None = None,
 ) -> dict[str, list[dict]]:
-    """Group stories into N/E/W/S using triage hints, drop blocked words, take top-K per layer.
+    """Group stories into N/E/W/S and cap each layer.
 
-    The output is keyed by layer and each story is enriched with `matched_tags`
-    and `relevance_score` so the writer doesn't need to re-derive them. Layers
-    that have no candidates simply come back empty — no AI guessing involved.
-
-    `targets` is a dict like {"N": 10, "E": 10, "W": 10, "S": 30} — the per-layer
-    cap. Each layer gets up to that many stories, sorted by score desc.
+    Layer assignment prefers `ai_layers` (from `triage_articles_with_ai`) when
+    available. Articles not classified by AI default to "S" (world).
+    Scoring is a small mechanical sum over tag matches, recency, and image.
+    The writer downstream only writes prose — it cannot drop or re-route layers.
     """
     blocked = user.blocked_words or []
     user_tags = user.tags or []
+    ai_layers = ai_layers or {}
 
     buckets: dict[str, list[dict]] = {k: [] for k in _VALID_LAYERS}
 
@@ -374,18 +686,20 @@ def bucket_stories(
         if _is_blocked(s, blocked):
             continue
 
-        article_id = s.get("article_id") or ""
-        hint = triage_hints.get(article_id) if triage_hints else None
-        layer = (hint or {}).get("layer", "S")
-        if layer not in _VALID_LAYERS:
-            layer = "S"
+        # AI classification wins; unclassified articles default to S (world).
+        # No deterministic fallback — the user preference is AI-only classification.
+        aid = s.get("article_id", "")
+        layer = ai_layers.get(aid) or "S"
+        score = _score_article(s, user_tags)
 
-        score = float((hint or {}).get("score", 0.3))
-
-        # Drop low-relevance, unrelated articles only at very low scores. Anything
-        # the triage pass thought was worth assigning a layer stays in the pool.
-        if score < 0.15:
-            continue
+        # N and E articles get a floor score so they always make the pool
+        # regardless of tag matches. A user in a small city has no tags that
+        # mention their town — without this boost those articles would all
+        # score 0.20 and get cut before the writer ever sees them.
+        if layer == "N":
+            score = max(score, 0.60)
+        elif layer == "E":
+            score = max(score, 0.45)
 
         enriched = dict(s)
         enriched["matched_tags"] = _matched_tags(s, user_tags)
@@ -393,9 +707,7 @@ def bucket_stories(
         enriched["layer"] = layer
         buckets[layer].append(enriched)
 
-    # Sort each layer by score desc and cap at the per-layer target. This is the
-    # cap that USED to fight with max_stories in the writer prompt — now it's
-    # deterministic and the writer never sees more than this.
+    # Sort each layer by score desc and cap at the per-layer target.
     for layer in _VALID_LAYERS:
         buckets[layer].sort(key=lambda s: s.get("relevance_score", 0.0), reverse=True)
         cap = max(0, int(targets.get(layer, 10)))
@@ -421,34 +733,39 @@ def _empty_section(layer: str, user) -> dict:
     }
 
 
-def _writer_payload(user, buckets: dict[str, list[dict]]) -> dict:
-    """Build the compact per-layer payload sent to the writer.
+def _writer_payload(user, buckets: dict[str, list[dict]], targets: dict[str, int]) -> dict:
+    """Build the compact payload sent to the writer.
 
-    Only the fields the writer needs for rewriting prose — the deterministic
-    passthrough fields (url, source_name, image_url, etc.) are NOT sent and
-    are merged back from `buckets` after the response.
+    Sends a candidate pool that is larger than the final target count — the
+    writer AI selects the best articles per layer and rewrites them.
+    We deliberately do NOT include the `country` metadata field: fetchers stamp
+    country = user.country on city/country searches, which would mislead the
+    writer. Title + description are the truth source.
     """
-    sections = {}
+    flat: list[dict] = []
     for layer in _VALID_LAYERS:
-        sections[layer] = {
-            "label": _layer_label(layer, user),
-            "stories": [
-                {
-                    "article_id": s["article_id"],
-                    "title": s.get("title", ""),
-                    "description": (s.get("description") or "")[:400],
-                    "matched_tags": s.get("matched_tags", []),
-                }
-                for s in buckets.get(layer, [])
-            ],
-        }
+        for s in buckets.get(layer, []):
+            flat.append({
+                "article_id": s["article_id"],
+                "current_layer": layer,
+                "title": s.get("title", ""),
+                "description": (s.get("description") or "")[:400],
+                "matched_tags": s.get("matched_tags", []),
+            })
     return {
         "user_profile": {
             "city": user.city,
             "country": user.country,
             "continent": user.continent,
         },
-        "sections": sections,
+        "targets": targets,
+        "layers": {
+            "N": f"Narrow — stories specifically about {user.city}",
+            "E": f"Expanded — stories specifically about {user.country} as a nation (NOT continent-wide)",
+            "W": f"Wide — stories about {user.continent} or other countries on {user.continent}",
+            "S": "Sweeping — world / global / other continents",
+        },
+        "articles": flat,
     }
 
 
@@ -457,47 +774,57 @@ def _merge_writer_output(
     buckets: dict[str, list[dict]],
     writer: dict,
 ) -> dict:
-    """Combine the writer's prose with the deterministic passthrough fields.
+    """Combine the writer's prose with passthrough source fields.
 
-    The writer is asked to emit one entry per input story in the same order.
-    We match by article_id with fallback to position, so a single missing or
-    re-ordered entry can't drop the rest of the layer.
+    The writer's only job is to rewrite headlines/hooks/summaries and deduplicate.
+    Layer placement is fixed by AI triage — the writer is instructed not to move
+    articles. We still accept an article under whichever layer the writer emits
+    it in (for robustness), but only for article_ids that came from the input.
+    Any invented id is silently discarded. If the writer returns ZERO stories for
+    a layer that Python had populated, we restore Python's picks so a model
+    misfire can never empty the briefing.
     """
-    out_sections: dict[str, dict] = {}
+    # Flat lookup across all input layers so we can honour layer-moves
+    by_id: dict[str, dict] = {}
+    for layer in _VALID_LAYERS:
+        for s in buckets.get(layer, []):
+            by_id[s["article_id"]] = s
+
     writer_sections = writer.get("sections") or {}
+    out_sections: dict[str, dict] = {}
+    placed_ids: set[str] = set()
 
     for layer in _VALID_LAYERS:
-        layer_stories = buckets.get(layer, [])
-        writer_section = writer_sections.get(layer) or {}
-        writer_stories = writer_section.get("stories") or []
-        by_id = {ws.get("article_id"): ws for ws in writer_stories if ws.get("article_id")}
+        ws = writer_sections.get(layer) or {}
+        writer_stories = ws.get("stories") or []
 
         out_stories: list[dict] = []
-        for idx, source in enumerate(layer_stories):
-            prose = by_id.get(source["article_id"]) or (
-                writer_stories[idx] if idx < len(writer_stories) else {}
+        for prose in writer_stories:
+            aid = prose.get("article_id")
+            source = by_id.get(aid) if aid else None
+            if not source or aid in placed_ids:
+                # Hallucinated id or already placed in another layer — skip.
+                continue
+            placed_ids.add(aid)
+            out_stories.append(_make_story(source, prose, layer))
+
+        # Safety fallback: if Python had stories here but the AI returned none,
+        # restore Python's picks (without prose — they'll show the raw title).
+        python_picks = buckets.get(layer, [])
+        if not out_stories and python_picks:
+            logger.warning(
+                "AI returned empty %s layer despite %d Python picks — falling back to Python",
+                layer, len(python_picks),
             )
-            out_stories.append({
-                "article_id": source["article_id"],
-                "headline": prose.get("headline") or source.get("title", ""),
-                "hook": prose.get("hook") or "",
-                "summary": prose.get("summary") or (source.get("description") or "")[:240],
-                "tone_label": prose.get("tone_label") or "INSIGHT",
-                "url": source.get("link", ""),
-                "source_name": source.get("source_name", ""),
-                "source_icon": source.get("source_icon"),
-                "image_url": source.get("image_url"),
-                "video_url": source.get("video_url"),
-                "matched_tags": source.get("matched_tags", []),
-                "relevance_score": source.get("relevance_score", 0.3),
-                "layer": layer,
-                "category": source.get("category", []),
-                "published_at": source.get("pubDate", ""),
-            })
+            for source in python_picks:
+                if source["article_id"] in placed_ids:
+                    continue
+                placed_ids.add(source["article_id"])
+                out_stories.append(_make_story(source, {}, layer))
 
         out_sections[layer] = {
             "label": _layer_label(layer, user),
-            "mood_line": writer_section.get("mood_line") or (
+            "mood_line": ws.get("mood_line") or (
                 "Nothing notable here today." if not out_stories else ""
             ),
             "stories": out_stories,
@@ -511,22 +838,71 @@ def _merge_writer_output(
     }
 
 
+def _make_story(source: dict, prose: dict, layer: str) -> dict:
+    """Assemble one card by merging AI prose with passthrough source fields."""
+    return {
+        "article_id": source["article_id"],
+        "headline": prose.get("headline") or source.get("title", ""),
+        "hook": prose.get("hook") or "",
+        "summary": prose.get("summary") or (source.get("description") or "")[:240],
+        "tone_label": prose.get("tone_label") or "INSIGHT",
+        "url": source.get("link", ""),
+        "source_name": source.get("source_name", ""),
+        "source_icon": source.get("source_icon"),
+        "image_url": source.get("image_url"),
+        "video_url": source.get("video_url"),
+        "matched_tags": source.get("matched_tags", []),
+        "relevance_score": source.get("relevance_score", 0.3),
+        "layer": layer,
+        "category": source.get("category", []),
+        "published_at": source.get("pubDate", ""),
+    }
+
+
 def generate_report(
     user,
     stories: list[dict],
     temperature: float = 0.7,
-    triage_hints: dict[str, dict] | None = None,
     targets: dict[str, int] | None = None,
+    on_progress=None,
 ) -> tuple[dict, str]:
-    """Bucket stories deterministically, then ask DeepSeek to write prose.
+    """Triage articles with AI, bucket them, then ask DeepSeek to write prose.
 
-    All filtering, classification, and per-layer capping happen in Python — the
-    writer can no longer accidentally drop a whole layer. The writer's job is
-    only to rewrite headlines, write hooks/summaries, pick a tone, and produce
-    the report-level prose (title, opening, closing, mood lines).
+    Pipeline:
+      1. AI triage  — classify all articles into N/E/W/S via a single
+                      deepseek-chat call. Falls back to deterministic per-article
+                      if the call fails.
+      2. Bucket     — group into layers, score, sort, cap per-layer target.
+      3. Write      — deepseek-chat rewrites headlines/hooks/summaries and
+                      generates the report-level prose.
+
+    `on_progress(stage, pct)` is called at key milestones if provided.
     """
-    targets = targets or {"N": 10, "E": 10, "W": 10, "S": 30}
-    buckets = bucket_stories(user, stories, triage_hints or {}, targets)
+    targets = targets or {"N": 15, "E": 15, "W": 10, "S": 40}
+
+    # ── Step 1: AI triage ─────────────────────────────────────────────────────
+    if on_progress:
+        on_progress("triaging", 65)
+    ai_layers = triage_articles_with_ai(user, stories)
+
+    # ── Step 2: Bucket ────────────────────────────────────────────────────────
+    # Build a candidate pool sent to the writer AI. N and E are uncapped —
+    # every article triage assigned there is passed through so the writer
+    # never misses city/country news (critical for small/remote towns).
+    # W and S have generous but bounded caps to keep token usage predictable.
+    pool_targets = {
+        "N": len(stories),          # uncapped — keep ALL city articles
+        "E": len(stories),          # uncapped — keep ALL country articles
+        "W": min(targets["W"] * 4, 80),
+        "S": min(targets["S"] * 4, 200),
+    }
+    buckets = bucket_stories(user, stories, pool_targets, ai_layers=ai_layers)
+    logger.info(
+        "Pool counts for user=%s — N=%d E=%d W=%d S=%d (in: %d stories, ai_classified: %d, targets: %s)",
+        getattr(user, "id", "?"),
+        len(buckets["N"]), len(buckets["E"]), len(buckets["W"]), len(buckets["S"]),
+        len(stories), len(ai_layers), targets,
+    )
 
     # If literally every layer is empty there's nothing to write. Return a
     # structurally-valid empty report so the UI still renders.
@@ -538,7 +914,11 @@ def generate_report(
             "sections": {layer: _empty_section(layer, user) for layer in _VALID_LAYERS},
         }, ""
 
-    user_message = json.dumps(_writer_payload(user, buckets), ensure_ascii=False)
+    # ── Step 3: Write ─────────────────────────────────────────────────────────
+    if on_progress:
+        on_progress("writing", 75)
+
+    user_message = json.dumps(_writer_payload(user, buckets, targets), ensure_ascii=False)
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -549,7 +929,7 @@ def generate_report(
             model="deepseek-chat",
             messages=messages,
             temperature=temperature,
-            max_tokens=8192,
+            max_tokens=12288,
             response_format={"type": "json_object"},
         )
     except Exception as exc:
@@ -584,6 +964,15 @@ def generate_report(
     try:
         parsed = _safe_json_load(raw)
         merged = _merge_writer_output(user, buckets, parsed)
+        # Compare Python-bucketed vs AI-finalised counts so a regression is
+        # visible in logs without rerunning the job.
+        py = {k: len(v) for k, v in buckets.items()}
+        ai = {k: len(merged["sections"][k]["stories"]) for k in _VALID_LAYERS}
+        logger.info(
+            "Writer selected — pool=N%d/E%d/W%d/S%d  →  final=N%d/E%d/W%d/S%d",
+            py["N"], py["E"], py["W"], py["S"],
+            ai["N"], ai["E"], ai["W"], ai["S"],
+        )
         return merged, raw
     except Exception as exc:
         logger.error(

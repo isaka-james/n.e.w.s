@@ -96,7 +96,7 @@ def _article_id(url: str) -> str:
     return "gn_" + hashlib.md5(url.encode()).hexdigest()
 
 
-def _normalize(article: dict, country: str | None = None, category: str | None = None) -> dict | None:
+def _normalize(article: dict, country: str | None = None, category: str | None = None, fetch_target: str | None = None) -> dict | None:
     title = (article.get("title") or "").strip()
     description = (article.get("description") or "").strip()
     if not title and not description:
@@ -118,6 +118,7 @@ def _normalize(article: dict, country: str | None = None, category: str | None =
         "source_icon": None,
         "country": country,
         "category": [category] if category else [],
+        "fetch_target": fetch_target or "global",
         "keywords": [],
         "pubDate": pub,
         "language": "en",
@@ -161,14 +162,16 @@ def _headlines(params: dict) -> list[dict]:
 
 def fetch_gnews_stories(user) -> list[dict]:
     """
-    Fetch from GNews. Budget: ~10 calls per generation (100 req/day → ~10 gens/day).
+    Fetch from GNews. Budget: ~15 calls per generation (100 req/day → ~6 gens/day).
 
     Allocation:
-      2 calls  — E: country general + country nation headlines
+      up to 3  — E: country general + nation headlines (conditional on country code)
+                    + country keyword search (always)
       2 calls  — N: city exact phrase + city broad search
-      1 call   — S: world top-headlines (global trending)
-      1 call   — S: general top-headlines (catch-all)
-      up to 4  — S: categories from high-priority tags (deduped)
+      up to 1  — W: continent keyword search (conditional on continent map)
+      3 calls  — S: world + general + business top-headlines
+      up to 6  — S: categories from high+medium priority tags (deduped)
+    Max: ~15 calls → 100/day safely covers ~6 generations/day.
     """
     if not settings.GNEWS_API_KEY:
         return []
@@ -181,36 +184,58 @@ def fetch_gnews_stories(user) -> list[dict]:
     if country_code:
         raw = _headlines({"country": country_code, "category": "general"})
         for a in raw:
-            n = _normalize(a, country=user.country, category="general")
+            n = _normalize(a, country=user.country, category="general", fetch_target="national")
             if n:
                 all_raw.append(n)
 
         # E layer: national headlines (politics/policy from the user's country)
         raw = _headlines({"country": country_code, "category": "nation"})
         for a in raw:
-            n = _normalize(a, country=user.country, category="nation")
+            n = _normalize(a, country=user.country, category="nation", fetch_target="national")
             if n:
                 all_raw.append(n)
         used_categories.add("nation")
 
+    # E layer: country name keyword search (catches stories about countries
+    # without a GNews country code, or extra coverage for those with one)
+    country_kw = _search({"q": user.country, "in": "title,description"})
+    for a in country_kw:
+        n = _normalize(a, country=user.country, category="national", fetch_target="national")
+        if n:
+            all_raw.append(n)
+
     # N layer: city exact phrase search
     city_raw = _search({"q": f'"{user.city}"'})
     for a in city_raw:
-        n = _normalize(a, country=user.country, category="local")
+        n = _normalize(a, country=user.country, category="local", fetch_target="local")
         if n:
             all_raw.append(n)
 
     # N layer: city broader search (captures "city region" variants)
     city_broad = _search({"q": user.city, "in": "title"})
     for a in city_broad:
-        n = _normalize(a, country=user.country, category="local")
+        n = _normalize(a, country=user.country, category="local", fetch_target="local")
         if n:
             all_raw.append(n)
+
+    # W layer: continent keyword search
+    _CONTINENT_KW: dict[str, str] = {
+        "Africa": "Africa", "Asia": "Asia", "Europe": "Europe",
+        "North America": "Americas", "South America": "Latin America",
+        "Oceania": "Pacific", "Middle East": "Middle East",
+    }
+    continent_kw = _CONTINENT_KW.get(user.continent)
+    if continent_kw:
+        cont_raw = _search({"q": continent_kw, "in": "title,description"})
+        for a in cont_raw:
+            n = _normalize(a, country=None, category="regional", fetch_target="regional")
+            if n:
+                all_raw.append(n)
 
     # S layer: world top-headlines
     world_raw = _headlines({"category": "world"})
     for a in world_raw:
-        n = _normalize(a, country=None, category="world")
+        n = _normalize(a, country=None, category="world", fetch_target="global")
         if n:
             all_raw.append(n)
     used_categories.add("world")
@@ -218,26 +243,35 @@ def fetch_gnews_stories(user) -> list[dict]:
     # S layer: general top-headlines (globally trending)
     gen_raw = _headlines({"category": "general"})
     for a in gen_raw:
-        n = _normalize(a, country=None, category="general")
+        n = _normalize(a, country=None, category="general", fetch_target="global")
         if n:
             all_raw.append(n)
     used_categories.add("general")
 
-    # S layer: up to 4 tag categories (high priority first, then medium)
+    # S layer: business top-headlines (globally — markets, economy, finance)
+    biz_raw = _headlines({"category": "business"})
+    for a in biz_raw:
+        n = _normalize(a, country=None, category="business", fetch_target="global")
+        if n:
+            all_raw.append(n)
+    used_categories.add("business")
+
+    # S layer: up to 6 tag categories (high priority first, then medium).
+    # Cap at 6 so worst-case total stays at ~15 calls (100/day → 6 gens/day).
     all_tags = (
         [t for t in (user.tags or []) if t.get("priority") == "high"] +
         [t for t in (user.tags or []) if t.get("priority") == "medium"]
     )
     extra_calls = 0
     for tag in all_tags:
-        if extra_calls >= 4:
+        if extra_calls >= 6:
             break
         tag_name = tag.get("name", "")
         cat = TAG_TO_GNEWS_CATEGORY.get(tag_name)
         if cat and cat not in used_categories:
             raw = _headlines({"category": cat})
             for a in raw:
-                n = _normalize(a, country=None, category=cat)
+                n = _normalize(a, country=None, category=cat, fetch_target="global")
                 if n:
                     all_raw.append(n)
             used_categories.add(cat)
@@ -246,7 +280,7 @@ def fetch_gnews_stories(user) -> list[dict]:
             # Keyword search for niche tags without a GNews category mapping
             raw = _search({"q": tag_name, "in": "title,description"})
             for a in raw:
-                n = _normalize(a, country=None, category=tag_name.lower())
+                n = _normalize(a, country=None, category=tag_name.lower(), fetch_target="global")
                 if n:
                     all_raw.append(n)
             extra_calls += 1

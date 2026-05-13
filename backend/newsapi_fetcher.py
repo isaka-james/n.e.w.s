@@ -44,7 +44,7 @@ def _article_id(url: str) -> str:
     return "na_" + hashlib.md5(url.encode()).hexdigest()
 
 
-def _normalize(article: dict, country: str | None = None, category: str | None = None) -> dict | None:
+def _normalize(article: dict, country: str | None = None, category: str | None = None, fetch_target: str | None = None) -> dict | None:
     """Convert a NewsAPI article to the same cleaned format used by the newsdata fetcher."""
     title = (article.get("title") or "").strip()
     description = (article.get("description") or "").strip()
@@ -76,6 +76,7 @@ def _normalize(article: dict, country: str | None = None, category: str | None =
         "source_icon": None,
         "country": country,
         "category": [category] if category else [],
+        "fetch_target": fetch_target or "global",
         "keywords": [],
         "pubDate": pub,
         "language": "en",
@@ -116,15 +117,16 @@ ALL_CATEGORIES = ["general", "business", "entertainment", "health", "science", "
 def fetch_newsapi_stories(user) -> list[dict]:
     """
     Fetch stories from NewsAPI.org.
-    Budget: ~15 calls per generation (100 req/day → ~7 generations/day).
+    Budget: ~18 calls per generation (100 req/day → ~5 generations/day).
 
     Allocation:
-      2 calls  — E: country general + business headlines
-      2 calls  — N: city exact phrase (by date) + city broad (by relevance)
-      1 call   — W: continent keyword search
+      up to 2  — E: country general + business top-headlines (conditional on country code)
+      2 calls  — N: city exact phrase + city broad keyword search
+      up to 2  — W: continent keyword + "<continent> news" (conditional on continent map)
+      up to 3  — S: country technology/health/science cross-section (conditional on country code)
       up to 5  — S: high-priority tag categories or keyword searches
-      up to 3  — S: medium-priority tag keyword searches
-      up to 2  — E: category headlines matching enabled tags
+      up to 4  — S: medium-priority tag keyword searches
+    Max: ~18 calls → 100/day safely covers ~5 generations/day.
     """
     country_code = NEWSAPI_COUNTRY_CODES.get(user.country)
     all_raw: list[dict] = []
@@ -136,7 +138,7 @@ def fetch_newsapi_stories(user) -> list[dict]:
         for cat in ("general", "business"):
             raw = _get(NEWSAPI_HEADLINES, {"country": country_code, "category": cat})
             for a in raw:
-                n = _normalize(a, country=user.country, category=cat)
+                n = _normalize(a, country=user.country, category=cat, fetch_target="national")
                 if n:
                     all_raw.append(n)
             used_categories.add(cat)
@@ -150,7 +152,7 @@ def fetch_newsapi_stories(user) -> list[dict]:
         "from": from_date,
     })
     for a in city_raw:
-        n = _normalize(a, country=user.country, category="local")
+        n = _normalize(a, country=user.country, category="local", fetch_target="local")
         if n:
             all_raw.append(n)
 
@@ -162,7 +164,7 @@ def fetch_newsapi_stories(user) -> list[dict]:
         "from": from_date,
     })
     for a in city_rel:
-        n = _normalize(a, country=user.country, category="local")
+        n = _normalize(a, country=user.country, category="local", fetch_target="local")
         if n:
             all_raw.append(n)
 
@@ -176,7 +178,18 @@ def fetch_newsapi_stories(user) -> list[dict]:
             "from": from_date,
         })
         for a in cont_raw:
-            n = _normalize(a, country=None, category="world")
+            n = _normalize(a, country=None, category="world", fetch_target="regional")
+            if n:
+                all_raw.append(n)
+        # Second W call: "<continent> news" for broader coverage
+        cont_news = _get(NEWSAPI_EVERYTHING, {
+            "q": f"{continent_kw} news",
+            "language": "en",
+            "sortBy": "relevancy",
+            "from": from_date,
+        })
+        for a in cont_news:
+            n = _normalize(a, country=None, category="world", fetch_target="regional")
             if n:
                 all_raw.append(n)
 
@@ -186,7 +199,7 @@ def fetch_newsapi_stories(user) -> list[dict]:
             if cat not in used_categories:
                 raw = _get(NEWSAPI_HEADLINES, {"country": country_code, "category": cat})
                 for a in raw:
-                    n = _normalize(a, country=user.country, category=cat)
+                    n = _normalize(a, country=user.country, category=cat, fetch_target="national")
                     if n:
                         all_raw.append(n)
                 used_categories.add(cat)
@@ -199,7 +212,7 @@ def fetch_newsapi_stories(user) -> list[dict]:
         if category and category not in used_categories:
             raw = _get(NEWSAPI_HEADLINES, {"category": category, "language": "en"})
             for a in raw:
-                n = _normalize(a, country=None, category=category)
+                n = _normalize(a, country=None, category=category, fetch_target="global")
                 if n:
                     all_raw.append(n)
             used_categories.add(category)
@@ -212,12 +225,12 @@ def fetch_newsapi_stories(user) -> list[dict]:
                 "from": from_date,
             })
             for a in raw:
-                n = _normalize(a, country=None, category=tag_name.lower())
+                n = _normalize(a, country=None, category=tag_name.lower(), fetch_target="global")
                 if n:
                     all_raw.append(n)
 
-    # --- S layer: medium-priority tags (up to 3 calls, keyword only) ---
-    med_tags = [t for t in (user.tags or []) if t.get("priority") == "medium"][:3]
+    # --- S layer: medium-priority tags (up to 4 calls, keyword only) ---
+    med_tags = [t for t in (user.tags or []) if t.get("priority") == "medium"][:4]
     for tag in med_tags:
         tag_name = tag.get("name", "")
         raw = _get(NEWSAPI_EVERYTHING, {
@@ -227,7 +240,7 @@ def fetch_newsapi_stories(user) -> list[dict]:
             "from": from_date,
         })
         for a in raw:
-            n = _normalize(a, country=None, category=tag_name.lower())
+            n = _normalize(a, country=None, category=tag_name.lower(), fetch_target="global")
             if n:
                 all_raw.append(n)
 

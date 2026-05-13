@@ -30,14 +30,14 @@
 
 ## News sources
 
-| Source | Daily limit | Rate limit | Date filter |
-|---|---|---|---|
-| NewsData.io | 200 req/day | none | post-fetch |
-| NewsAPI | 100 req/day | none | `from` |
-| NewsCatcher CatchAll | pay-as-you-go | 1 concurrent job | `DISCOVERY_WINDOW_DAYS = 1` |
-| GNews | 100 req/day | 1 req/s | `from` |
-| The Guardian | 500 req/day | 1 req/s | `from-date` |
-| New York Times | 4,000 req/day | 10 req/min | `begin_date` |
+| Source | Daily limit | Rate limit | Calls/gen | Date filter |
+|---|---|---|---|---|
+| NewsData.io | 200 req/day | none | ~18 | post-fetch |
+| NewsAPI | 100 req/day | none | ~18 | `from` |
+| NewsCatcher CatchAll | pay-as-you-go | 1 concurrent job | 1 | `DISCOVERY_WINDOW_DAYS = 1` |
+| GNews | 100 req/day | 1 req/s | ~15 | `from` |
+| The Guardian | 5,000 req/day | 1 req/s | ~36 | `from-date` |
+| New York Times | 4,000 req/day | 10 req/min | ~27 | `begin_date` |
 
 Rate limits are enforced in-process with a `threading.Lock` throttle.
 

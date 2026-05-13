@@ -164,6 +164,7 @@ def _clean_article(article: dict) -> dict | None:
         "source_icon": strip_placeholder(article.get("source_icon")),
         "country": country,
         "category": article.get("category") or [],
+        "fetch_target": article.get("fetch_target") or "global",
         "keywords": article.get("keywords") or [],
         "pubDate": article.get("pubDate", ""),
         "language": article.get("language", ""),
@@ -187,20 +188,51 @@ def _fetch_page(params: dict) -> list[dict]:
 
 
 def _fetch_newsdata(user) -> list[dict]:
-    """Pull from NewsData.io across all four geographic layers."""
+    """Pull from NewsData.io. Budget: ~18 calls / generation (200 req/day cap).
+
+    Allocation:
+      1  — country code (E layer)
+      2  — country name + "country news" (E layer)
+      2  — city exact phrase + city broad (N layer)
+      1  — continent keyword (W layer)
+      1  — trending/top-domain globally (S layer)
+      5  — core global categories: world, business, technology, science, health (S layer)
+      up to 6  — user topic keywords, high priority first (S layer)
+    """
     country_code = COUNTRY_CODE_MAP.get(user.country, "")
     continent_keyword = CONTINENT_KEYWORDS.get(user.continent, user.continent)
-    high_tags = [t["name"] for t in (user.tags or []) if t.get("priority") == "high"][:3]
+
+    # All user topics (high first, then medium, then low) — used as keyword
+    # searches so every stated interest gets direct coverage.
+    all_tags = (
+        [t.get("name") for t in (user.tags or []) if t.get("priority") == "high" and t.get("name")] +
+        [t.get("name") for t in (user.tags or []) if t.get("priority") == "medium" and t.get("name")] +
+        [t.get("name") for t in (user.tags or []) if t.get("priority") == "low" and t.get("name")]
+    )
+    tag_queries = all_tags[:6]
 
     raw: list[dict] = []
+
+    def _add(articles: list[dict], target: str) -> None:
+        for a in articles:
+            a["fetch_target"] = target
+        raw.extend(articles)
+
     if country_code:
-        raw += _fetch_page({"country": country_code})
-    raw += _fetch_page({"q": user.city})
-    raw += _fetch_page({"q": continent_keyword})
-    # Trending/viral stories — top prioritydomain without geo filter
-    raw += _fetch_page({"prioritydomain": "top"})
-    for tag in high_tags:
-        raw += _fetch_page({"q": tag})
+        _add(_fetch_page({"country": country_code}), "national")
+    _add(_fetch_page({"q": user.country}), "national")
+    _add(_fetch_page({"q": f"{user.country} news"}), "national")
+    _add(_fetch_page({"q": f'"{user.city}"'}), "local")
+    _add(_fetch_page({"q": user.city}), "local")
+    _add(_fetch_page({"q": continent_keyword}), "regional")
+    _add(_fetch_page({"prioritydomain": "top"}), "global")
+    _add(_fetch_page({"category": "world"}), "global")
+    _add(_fetch_page({"category": "business"}), "global")
+    _add(_fetch_page({"category": "technology"}), "global")
+    _add(_fetch_page({"category": "science"}), "global")
+    _add(_fetch_page({"category": "health"}), "global")
+    for tag in tag_queries:
+        _add(_fetch_page({"q": tag}), "global")
     return raw
 
 
@@ -216,15 +248,19 @@ def fetch_stories(
 ) -> list[dict]:
     """
     Fetch and merge stories from all enabled news sources.
-    Deduplicates by article_id, cleans, caps at 120 for DeepSeek.
-    Source budget per generation:
-      NewsData   : ~7 calls  (200/day, synchronous)
-      NewsAPI    : ~13 calls (100/day, synchronous)
-      NewsCatcher: async CatchAll job — reuses today's cached records when possible;
-                   short ~60s inline poll when a new job is needed.
-      GNews      : ~10 calls (100/day, synchronous)
-      Guardian   : ~18 calls (5,000/day, synchronous)
-      NYTimes    : ~14 calls (4,000/day, synchronous)
+    Deduplicates by article_id, cleans, caps at 500 articles for downstream stages.
+
+    Source budget per generation (intentionally generous — we want a big candidate
+    pool so the per-layer bucketing has lots to choose from):
+      NewsData   : ~18 calls (200/day,   ~11 gens/day)
+      NewsAPI    : ~18 calls (100/day,   ~5  gens/day)
+      NewsCatcher: 1 async CatchAll job  (reuses cached records when possible)
+      GNews      : ~15 calls (100/day,   ~6  gens/day)
+      Guardian   : ~36 calls (5,000/day, ~138 gens/day)
+      NYTimes    : ~26 calls (4,000/day, ~153 gens/day)
+
+    A typical generation finishes in 1–4 minutes depending on rate-limited
+    sources (Guardian + GNews each throttle to 1 req/s).
     """
     from newsapi_fetcher import fetch_newsapi_stories
     from newscatcher_fetcher import fetch_newscatcher_stories
@@ -287,8 +323,9 @@ def fetch_stories(
     # Apply 3-day recency window: keep today, yesterday, and the day before
     cleaned = [a for a in cleaned if _is_within_3_days(a.get("pubDate", ""))]
 
-    # Cap at 120 — large enough for 6 sources while keeping the DeepSeek payload manageable
-    return cleaned[:120]
+    # Cap at 500. Python bucketing picks the best per layer; the writer never
+    # sees more than the per-layer targets, so a large pool is free downstream.
+    return cleaned[:500]
 
 
 def fetch_local_boost(user, seen_ids: set[str]) -> list[dict]:
@@ -308,34 +345,37 @@ def fetch_local_boost(user, seen_ids: set[str]) -> list[dict]:
     new_raw: list[dict] = []
 
     # ── Guardian boost ────────────────────────────────────────────────────────
-    def _add_guardian(items: list[dict], category: str | None = None, country: str | None = None) -> None:
+    def _add_guardian(items: list[dict], category: str | None = None, country: str | None = None, fetch_target: str | None = None) -> None:
         for item in items:
-            n = _guardian_normalize(item, category=category, country=country)
+            n = _guardian_normalize(item, category=category, country=country, fetch_target=fetch_target)
             if n:
                 new_raw.append(n)
 
     # Country: larger page than the 15 used in the first pass
-    _add_guardian(_guardian_search(q=user.country, page_size=30), category="national", country=user.country)
+    _add_guardian(_guardian_search(q=user.country, page_size=30), category="national", country=user.country, fetch_target="national")
     # City: larger page
-    _add_guardian(_guardian_search(q=user.city, page_size=25), category="local", country=user.country)
+    _add_guardian(_guardian_search(q=user.city, page_size=25), category="local", country=user.country, fetch_target="local")
     # Continent keyword — lifts W layer too, which may promote to N/E if city/country appears
     continent_kw = {
         "Africa": "Africa", "Asia": "Asia", "Europe": "Europe",
         "North America": "Americas", "South America": "Latin America", "Oceania": "Pacific",
     }.get(user.continent, user.continent)
     if continent_kw:
-        _add_guardian(_guardian_search(q=continent_kw, page_size=15), category="regional")
+        _add_guardian(_guardian_search(q=continent_kw, page_size=15), category="regional", fetch_target="regional")
 
     # ── NYTimes boost ─────────────────────────────────────────────────────────
-    for art in _nyt_search(user.country, page_size=20, country=user.country):
+    for art in _nyt_search(user.country, page_size=20, country=user.country, fetch_target="national"):
         new_raw.append(art)
-    for art in _nyt_search(user.city, page_size=15, country=user.country):
+    for art in _nyt_search(user.city, page_size=15, country=user.country, fetch_target="local"):
         new_raw.append(art)
 
     # ── NewsData boost (1 extra call — 200/day budget is tighter) ────────────
     country_code = COUNTRY_CODE_MAP.get(user.country, "")
     if country_code:
-        new_raw += _fetch_page({"country": country_code})
+        boost_articles = _fetch_page({"country": country_code})
+        for a in boost_articles:
+            a["fetch_target"] = "national"
+        new_raw += boost_articles
 
     # Deduplicate, clean, and apply 3-day recency window
     results: list[dict] = []
