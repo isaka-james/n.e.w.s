@@ -2,7 +2,7 @@
 
 Your personal AI news assistant. Set your location and interests, get a daily briefing.
 
-![N.E.W.S. dashboard](img/home-not-generated.png)
+![N.E.W.S. dashboard](img/preview.png)
 
 ## Requirements
 
